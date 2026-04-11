@@ -6,12 +6,10 @@
     - servicenow.itsm
 
   tasks:
-    # 1. 修改后的写法（字典）：
+    # 1. 使用 sysparm_query 绕过复杂的格式转换报错，直接执行查询
     - name: Retrieve New VM Provisioning incidents
       servicenow.itsm.incident_info:
-        query:
-          state: "1"
-          short_description: "LIKEVM Provision"
+        sysparm_query: "state=1^short_descriptionLIKEVM Provision"
       register: incident_result
 
     # 2. 检查是否有活干：如果没有发现符合条件的工单，优雅结束
@@ -19,7 +17,7 @@
       ansible.builtin.meta: end_play
       when: incident_result.records | length == 0
 
-    # 3. 接单：为了防止下一次轮询重复，立即将第一张单子的状态改为 In Progress(2)
+    # 3. 接单：立即将工单状态改为 In Progress(2)
     - name: Acknowledge the ticket (Move to In Progress)
       servicenow.itsm.incident:
         state: in_progress
@@ -29,27 +27,25 @@
           comments: "Ansible AAP has picked up this ticket for automated provisioning."
       register: updated_incident
 
-    # 4. 寻找附件：通过工单的 sys_id 查找对应的附件信息
+    # 4. 寻找附件：获取该工单关联的附件元数据
     - name: Get attachment metadata for the incident
       servicenow.itsm.attachment_info:
         table_sys_id: "{{ incident_result.records[0].sys_id }}"
       register: attach_info
 
-    # 5. 下载附件：将附件下载到 AAP 容器的临时目录
+    # 5. 下载附件：从元数据中提取下载链接，并存入容器本地
     - name: Download the XLS attachment
       ansible.builtin.get_url:
-        # 使用附件记录中的 download_link
         url: "{{ item.download_link }}"
         dest: "/tmp/Provision_Request_Form_v1.xlsx"
-        # 使用环境变量中的 SN 凭据进行下载认证
         url_username: "{{ lookup('env', 'SN_USERNAME') }}"
         url_password: "{{ lookup('env', 'SN_PASSWORD') }}"
         force_basic_auth: yes
       loop: "{{ attach_info.records }}"
-      # 确保只下载你刚才上传的那个特定名字的文件（防止有干扰附件）
+      # 确保只下载你上传的那个特定文件
       when: item.file_name == "Provision_Request_Form_v1.xlsx"
 
-    # 6. 传递情报：将工单号传递给后续 Workflow 节点
+    # 6. 设置 Workflow 统计信息，将关键变量传递给后续节点
     - name: Set stats for the next Playbook (Workflow B)
       ansible.builtin.set_stats:
         data:
