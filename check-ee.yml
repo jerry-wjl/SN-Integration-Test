@@ -5,7 +5,7 @@
   
   tasks:
     - name: Get all collections
-      ansible.buildin.command: "ansible-galaxy collection list -p collections"
+      ansible.builtin.command: "ansible-galaxy collection list -p collections"
       register: collection_list
 
     - name: Print collection list
