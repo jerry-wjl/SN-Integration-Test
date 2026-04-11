@@ -9,16 +9,11 @@
         sysparm_query: "short_descriptionLIKEVM Provision"
       register: incident_result
 
-    - name: 2. DEBUG - Print ALL Incident Information
-      ansible.builtin.debug:
-        var: incident_result
-        # 你可以在输出中找 sys_id, number, state 等字段
-
-    - name: 3. End play if no tickets found
+    - name: 2. End play if no tickets found
       ansible.builtin.meta: end_play
       when: incident_result.records | length == 0
 
-    - name: 4. Acknowledge the ticket
+    - name: 3. Acknowledge the ticket
       servicenow.itsm.incident:
         state: in_progress
         number: "{{ incident_result.records[0].number }}"
@@ -26,9 +21,8 @@
           assigned_to: "{{ lookup('env', 'SN_USERNAME') }}"
       register: updated_incident
 
-    - name: 5. 【已修复】Get attachment list via REST API
+    - name: 4. Get attachment list via REST API
       ansible.builtin.uri:
-        # 去掉了多余的 https://，直接使用变量
         url: "{{ lookup('env', 'SN_HOST') }}/api/now/table/sys_attachment?sysparm_query=table_sys_id={{ incident_result.records[0].sys_id }}"
         method: GET
         user: "{{ lookup('env', 'SN_USERNAME') }}"
@@ -37,24 +31,22 @@
         status_code: 200
       register: api_attach_info
 
-    - name: 6. DEBUG - Print Attachment Metadata
-      ansible.builtin.debug:
-        var: api_attach_info.json
-
-    - name: 7. 【已修复】Download the XLS attachment
-      ansible.builtin.get_url:
-        # 同样去掉多余的 https://
+    - name: 5. 【修复版】Download the XLS attachment using uri module
+      ansible.builtin.uri:
         url: "{{ lookup('env', 'SN_HOST') }}/api/now/attachment/{{ item.sys_id }}/value"
-        dest: "/tmp/Provision_Request_Form_v1.xlsx"
-        url_username: "{{ lookup('env', 'SN_USERNAME') }}"
-        url_password: "{{ lookup('env', 'SN_PASSWORD') }}"
+        method: GET
+        user: "{{ lookup('env', 'SN_USERNAME') }}"
+        password: "{{ lookup('env', 'SN_PASSWORD') }}"
         force_basic_auth: yes
+        # 关键设置：直接保存到文件，绕过 get_url 的解析问题
+        dest: "/tmp/Provision_Request_Form_v1.xlsx"
+        status_code: 200
       loop: "{{ api_attach_info.json.result | default([]) }}"
       when: 
         - api_attach_info.json is defined
         - item.file_name == "Provision_Request_Form_v1.xlsx"
 
-    - name: 8. Set stats for the next Playbook
+    - name: 6. Set stats for the next Playbook
       ansible.builtin.set_stats:
         data:
           snow_ticket_number: "{{ incident_result.records[0].number }}"
