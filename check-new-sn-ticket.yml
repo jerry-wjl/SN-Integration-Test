@@ -45,7 +45,7 @@
           username: "{{ lookup('env', 'SN_USERNAME') }}"
           password: "{{ lookup('env', 'SN_PASSWORD') }}"
         sys_id: "{{ item.sys_id }}"
-        dest: "/tmp/Provision_Request_Form_v1.xlsx"
+        dest: "/home/rhel/aap/controller/data/projects/Provision_Request_Form_v1.xlsx"
       loop: "{{ api_attach_info.json.result | default([]) }}"
       when: 
         - api_attach_info.json is defined
