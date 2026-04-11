@@ -34,7 +34,7 @@
         status_code: 200
       register: api_attach_info
 
-    # 4. 下载到容器内部的 /tmp 目录 (这是 EE 容器保证能写的目录)
+    # 4. 下载到容器内部的 /tmp 目录
     - name: Download attachment to container local tmp
       servicenow.itsm.attachment_info:
         instance:
@@ -48,24 +48,31 @@
         - api_attach_info.json is defined
         - item.file_name == "Provision_Request_Form_v1.xlsx"
 
-    # 5. 直接在 Playbook 里利用 Python 解析
+    # 5. 【重点修改】加固解析逻辑
     - name: Parse Excel within the container
       ansible.builtin.shell: |
         python3 << EOF
         import pandas as pd
         import json
         try:
-            df = pd.read_excel('/tmp/Provision_Request_Form_v1.xlsx')
-            # 这里的解析逻辑根据你的截图微调：假设在第4列找属性，第6列拿值
-            def get_val(key):
-                mask = df.iloc[:, 3].astype(str).str.contains(key, na=False)
-                return str(df[mask].iloc[0, 5]).strip() if not df[mask].empty else "N/A"
+            # header=None 能够防止 Pandas 错误地将数据行当作表头
+            df = pd.read_excel('/tmp/Provision_Request_Form_v1.xlsx', header=None)
             
+            def get_val(key):
+                # 全表模糊搜索关键行，忽略正则，防止 (GB) 报错
+                mask = df.apply(lambda row: row.astype(str).str.contains(key, regex=False, na=False).any(), axis=1)
+                if not df[mask].empty:
+                    # 找到该行后，过滤掉 NaN，取该行最后一个非空值（通常就是对应的 Value）
+                    vals = df[mask].iloc[0].dropna().values
+                    return str(vals[-1]).strip()
+                return "N/A"
+            
+            # 对齐表格中的精确字段名
             data = {
                 "os": get_val("OS Version"),
                 "cpu": get_val("#CPU Cores"),
                 "ram": get_val("Memory (GB)"),
-                "disk": get_val("OS Disk")
+                "disk": get_val("Total Disk Size(GB)")  # 截图最后一行汇总了总大小
             }
             print(json.dumps(data))
         except Exception as e:
