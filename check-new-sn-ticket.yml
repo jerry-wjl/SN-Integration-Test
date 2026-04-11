@@ -1,12 +1,11 @@
----
-- name: Sentinel A - Find and Download Provisioning Request (Collection 2.2 optimized)
+- name: Sentinel A - Find and Download Provisioning Request
   hosts: localhost
   gather_facts: false
   collections:
     - servicenow.itsm
 
   tasks:
-    # 1. 查找工单（已知可用）
+    # 1. 查找工单
     - name: Retrieve VM Provisioning incidents
       servicenow.itsm.incident_info:
         sysparm_query: "short_descriptionLIKEVM Provision"
@@ -24,8 +23,7 @@
         other:
           assigned_to: "{{ lookup('env', 'SN_USERNAME') }}"
 
-    # 3. 使用 uri 模块获取【附件本身的 sys_id】
-    # 因为 2.2 版本缺少 table_info 模块，这是获取附件 ID 的最稳方式
+    # 3. 获取附件 ID
     - name: Get attachment sys_id via REST API
       ansible.builtin.uri:
         url: "{{ lookup('env', 'SN_HOST') }}/api/now/table/sys_attachment?sysparm_query=table_sys_id={{ incident_result.records[0].sys_id }}"
@@ -36,30 +34,49 @@
         status_code: 200
       register: api_attach_info
 
-    # 4. 使用你查到的官方 2.2 模块执行下载
-    # 注意：这里调用的是 servicenow.itsm.attachment_info
-    - name: Download attachment using 2.2 module
+    # 4. 下载到容器内部的 /tmp 目录 (这是 EE 容器保证能写的目录)
+    - name: Download attachment to container local tmp
       servicenow.itsm.attachment_info:
         instance:
           host: "{{ lookup('env', 'SN_HOST') }}"
           username: "{{ lookup('env', 'SN_USERNAME') }}"
           password: "{{ lookup('env', 'SN_PASSWORD') }}"
         sys_id: "{{ item.sys_id }}"
-        dest: "/home/rhel/aap/controller/data/projects/Provision_Request_Form_v1.xlsx"
+        dest: "/tmp/Provision_Request_Form_v1.xlsx"
       loop: "{{ api_attach_info.json.result | default([]) }}"
       when: 
         - api_attach_info.json is defined
         - item.file_name == "Provision_Request_Form_v1.xlsx"
 
-    # 5. 验证并传递状态
-    - name: Verify download
-      ansible.builtin.stat:
-        path: "/home/rhel/aap/controller/data/projects/Provision_Request_Form_v1.xlsx"
-      register: file_check
+    # 5. 直接在 Playbook 里利用 Python 解析
+    - name: Parse Excel within the container
+      ansible.builtin.shell: |
+        python3 << EOF
+        import pandas as pd
+        import json
+        try:
+            df = pd.read_excel('/tmp/Provision_Request_Form_v1.xlsx')
+            # 这里的解析逻辑根据你的截图微调：假设在第4列找属性，第6列拿值
+            def get_val(key):
+                mask = df.iloc[:, 3].astype(str).str.contains(key, na=False)
+                return str(df[mask].iloc[0, 5]).strip() if not df[mask].empty else "N/A"
+            
+            data = {
+                "os": get_val("OS Version"),
+                "cpu": get_val("#CPU Cores"),
+                "ram": get_val("Memory (GB)"),
+                "disk": get_val("OS Disk")
+            }
+            print(json.dumps(data))
+        except Exception as e:
+            print(json.dumps({"error": str(e)}))
+        EOF
+      register: python_out
 
-    - name: Set stats for workflow
+    # 6. 将结果通过 set_stats 传给下一个 Playbook
+    - name: Pass variables to Workflow
       ansible.builtin.set_stats:
         data:
-          snow_ticket_number: "{{ incident_result.records[0].number }}"
-          local_excel_path: "/home/rhel/aap/controller/data/projects/Provision_Request_Form_v1.xlsx"
-          has_work: "{{ file_check.stat.exists }}"
+          provision_vars: "{{ python_out.stdout | from_json }}"
+          snow_incident: "{{ incident_result.records[0].number }}"
+          has_work: true
