@@ -1,0 +1,13 @@
+---
+- name: Check EE and collections
+  hosts: localhost
+  gather_facts: false
+  
+  tasks:
+    - name: Get all collections
+      ansible.buildin.command: "ansible-galaxy collection list -p collections"
+      register: collection_list
+
+    - name: Print collection list
+      ansible.builtin.debug:
+        var: collection_list
