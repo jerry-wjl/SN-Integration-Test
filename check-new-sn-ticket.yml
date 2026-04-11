@@ -1,5 +1,5 @@
 ---
-- name: Sentinel A - Final Optimized Data Extraction
+- name: Sentinel A - Final Data Extraction with Ticket Context
   hosts: localhost
   gather_facts: false
   collections:
@@ -8,19 +8,20 @@
   tasks:
     - name: 1. Search for VM Provisioning Ticket
       servicenow.itsm.incident_info:
-        sysparm_query: "short_descriptionLIKEVM Provision"
+        sysparm_query: "short_descriptionLIKEVM Provision^state=1" # 仅查找新建状态的工单
       register: incident_result
 
     - name: End play if no tickets found
       ansible.builtin.meta: end_play
       when: incident_result.records | length == 0
 
-    - name: 2. Acknowledge the ticket
+    - name: 2. Acknowledge and Set State to In Progress
       servicenow.itsm.incident:
-        state: in_progress
         number: "{{ incident_result.records[0].number }}"
+        state: 2  # 强制设为 2 (In Progress)
         other:
           assigned_to: "{{ lookup('env', 'SN_USERNAME') }}"
+          work_notes: "Ansible AAP has captured this ticket. Incident Number and Sys_ID are now being tracked."
 
     - name: 3. Get attachment sys_id
       ansible.builtin.uri:
@@ -42,7 +43,7 @@
       loop: "{{ api_attach_info.json.result | default([]) }}"
       when: item.file_name == "Provision_Request_Form_v1.xlsx"
 
-    - name: 5. Parse into Structured Object (The Final Polish)
+    - name: 5. Parse into Structured Object (Including Ticket Info)
       ansible.builtin.shell: |
         python3 << EOF
         import pandas as pd
@@ -64,8 +65,12 @@
                         return raw
                 return 0 if is_num else ""
 
-            # 构建优化的嵌套结构
+            # 组织最终的数据结构
             structured_data = {
+                "ticket_context": {
+                    "number": "{{ incident_result.records[0].number }}",
+                    "sys_id": "{{ incident_result.records[0].sys_id }}"
+                },
                 "server_info": {
                     "hostname": extract("Server Description"),
                     "app_type": extract("Application Type"),
@@ -78,7 +83,7 @@
                     "ram_gb": extract("Memory", is_num=True)
                 },
                 "storage": {
-                    "os_disk_gb": 80, # 默认值
+                    "os_disk_gb": 80,
                     "data_disk_gb": extract("App Disk", is_num=True),
                     "db_data_gb": extract("DB Data Disk", is_num=True),
                     "db_log_gb": extract("DB Log Disk", is_num=True),
@@ -100,9 +105,13 @@
       ansible.builtin.set_stats:
         data:
           provision_data: "{{ python_out.stdout | from_json }}"
-          snow_ticket: "{{ incident_result.records[0].number }}"
           has_work: true
 
-    - name: 7. Final Review of Variables
-      ansible.builtin.debug:
-        var: python_out.stdout | from_json
+    - name: 7. Update Ticket with Extraction Report
+      servicenow.itsm.incident:
+        sys_id: "{{ incident_result.records[0].sys_id }}"
+        other:
+          work_notes: |
+            [AUTOMATION] Extraction completed for {{ incident_result.records[0].number }}.
+            Parsed Specs: {{ (python_out.stdout | from_json).vm_specs.cpu }} CPU, {{ (python_out.stdout | from_json).vm_specs.ram_gb }}GB RAM.
+            Workflow will now proceed to infrastructure provisioning.
