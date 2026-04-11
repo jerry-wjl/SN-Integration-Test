@@ -1,12 +1,12 @@
 ---
-- name: Sentinel A - Find and Download Provisioning Request
+- name: Sentinel A - Full Data Extraction from Excel
   hosts: localhost
   gather_facts: false
   collections:
     - servicenow.itsm
 
   tasks:
-    # 1. 查找工单
+    # 1. 在 ServiceNow 中查找符合条件的工单
     - name: Retrieve VM Provisioning incidents
       servicenow.itsm.incident_info:
         sysparm_query: "short_descriptionLIKEVM Provision"
@@ -16,16 +16,16 @@
       ansible.builtin.meta: end_play
       when: incident_result.records | length == 0
 
-    # 2. 接单 (Acknowledge)
+    # 2. 将工单标记为处理中 (In Progress)
     - name: Acknowledge the ticket
       servicenow.itsm.incident:
         state: in_progress
         number: "{{ incident_result.records[0].number }}"
         other:
           assigned_to: "{{ lookup('env', 'SN_USERNAME') }}"
-          work_notes: "Ansible AAP started parsing the attachment for provisioning."
+          work_notes: "Ansible AAP is extracting full system requirements from the attachment."
 
-    # 3. 获取附件 ID (针对 Collection 2.2 的可靠方案)
+    # 3. 获取附件的 sys_id
     - name: Get attachment sys_id via REST API
       ansible.builtin.uri:
         url: "{{ lookup('env', 'SN_HOST') }}/api/now/table/sys_attachment?sysparm_query=table_sys_id={{ incident_result.records[0].sys_id }}"
@@ -36,7 +36,7 @@
         status_code: 200
       register: api_attach_info
 
-    # 4. 下载附件到容器本地 /tmp
+    # 4. 下载附件到 Execution Environment 容器的 /tmp 目录
     - name: Download attachment to container local tmp
       servicenow.itsm.attachment_info:
         instance:
@@ -50,8 +50,8 @@
         - api_attach_info.json is defined
         - item.file_name == "Provision_Request_Form_v1.xlsx"
 
-    # 5. 使用加固后的 Python 逻辑解析 Excel
-    - name: Parse Excel into Clean Variables
+    # 5. 使用 Python 自动化扫描所有表格字段
+    - name: Parse Excel into Full Variables List
       ansible.builtin.shell: |
         python3 << EOF
         import pandas as pd
@@ -59,49 +59,50 @@
         import re
 
         try:
-            # 不读表头，防止数据偏移
+            # 忽略表头读取，直接扫描全表
             df = pd.read_excel('/tmp/Provision_Request_Form_v1.xlsx', header=None)
             
-            def get_clean_num(key):
-                # 模糊搜索包含关键字的行，不区分大小写
+            def extract(key):
+                # 在全表中模糊查找包含该关键字的行，不使用正则以避开括号干扰
                 mask = df.apply(lambda row: row.astype(str).str.contains(key, case=False, regex=False, na=False).any(), axis=1)
                 if not df[mask].empty:
-                    # 取该行最后一个有值的单元格
+                    # 获取该行所有非空值，取最后一个作为 Value
                     vals = df[mask].iloc[0].dropna().values
-                    raw_str = str(vals[-1]).strip()
-                    # 正则提取数字：如 "16GB" -> "16"
-                    match = re.search(r'(\d+)', raw_str)
-                    return int(match.group(1)) if match else 0
-                return 0
+                    if len(vals) > 1:
+                        raw_val = str(vals[-1]).strip()
+                        # 针对 CPU、内存、磁盘等数字字段提取纯数字
+                        if any(x in key for x in ["CPU", "Memory", "Disk", "Size"]):
+                            match = re.search(r'(\d+)', raw_val)
+                            return int(match.group(1)) if match else raw_val
+                        return raw_val
+                return "" # 如果找不到或右侧无值，返回空字符串
 
-            def get_raw_str(key):
-                mask = df.apply(lambda row: row.astype(str).str.contains(key, case=False, regex=False, na=False).any(), axis=1)
-                if not df[mask].empty:
-                    vals = df[mask].iloc[0].dropna().values
-                    return str(vals[-1]).strip()
-                return "Unknown"
+            # 定义需要对齐的表格清单（严格匹配你截图中的文字）
+            target_keys = [
+                "Server Description", "Application Type", "Platform", "Server Type",
+                "OS Version", "DB Version", "Enable TDE(Y/N)", "HA Protection",
+                "Server Property(s)", "#CPU Cores", "Memory(GB)", "App Disk(GB)",
+                "DB Data Disk M:(GB)", "DB Log Disk L:(GB)", "Total Disk Size(GB)"
+            ]
 
-            data = {
-                "vm_os": get_raw_str("OS Version"),
-                "vm_cpu": get_clean_num("#CPU Cores"),
-                "vm_ram_gb": get_clean_num("Memory"),
-                "vm_disk_gb": get_clean_num("Total Disk Size")
-            }
-            print(json.dumps(data))
+            # 自动转换变量名：去掉特殊字符，空格换成下划线
+            full_data = { re.sub(r'[^a-zA-Z0-9]', '_', k).lower().strip('_'): extract(k) for k in target_keys }
+            
+            print(json.dumps(full_data))
         except Exception as e:
             print(json.dumps({"error": str(e)}))
         EOF
       register: python_out
 
-    # 6. 设置 Workflow 共享变量 (Artifacts)
-    - name: Pass clean variables to Workflow
+    # 6. 将提取到的结构化数据设置为 Workflow 的全局 Artifacts
+    - name: Set stats for the next Playbook (Executioner B)
       ansible.builtin.set_stats:
         data:
           provision_vars: "{{ python_out.stdout | from_json }}"
           snow_incident_number: "{{ incident_result.records[0].number }}"
-          snow_incident_sys_id: "{{ incident_result.records[0].sys_id }}"
           has_work: true
 
-    - name: Debug Output for Verification
+    # 7. 打印出来确认一眼（方便你在 Job Output 里检查）
+    - name: Show extracted data summary
       ansible.builtin.debug:
-        var: python_out.stdout | from_json
+        msg: "Extracted full config: {{ python_out.stdout | from_json }}"
