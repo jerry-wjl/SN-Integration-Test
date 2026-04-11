@@ -54,12 +54,12 @@
     # 5. 验证并传递状态
     - name: Verify download
       ansible.builtin.stat:
-        path: "/tmp/Provision_Request_Form_v1.xlsx"
+        path: "/home/rhel/aap/controller/data/projects/Provision_Request_Form_v1.xlsx"
       register: file_check
 
     - name: Set stats for workflow
       ansible.builtin.set_stats:
         data:
           snow_ticket_number: "{{ incident_result.records[0].number }}"
-          local_excel_path: "/tmp/Provision_Request_Form_v1.xlsx"
+          local_excel_path: "/home/rhel/aap/controller/data/projects/Provision_Request_Form_v1.xlsx"
           has_work: "{{ file_check.stat.exists }}"
