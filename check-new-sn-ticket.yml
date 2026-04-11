@@ -1,13 +1,12 @@
 ---
-- name: Sentinel A - Full Data Extraction from Excel
+- name: Sentinel A - Final Optimized Data Extraction
   hosts: localhost
   gather_facts: false
   collections:
     - servicenow.itsm
 
   tasks:
-    # 1. 在 ServiceNow 中查找符合条件的工单
-    - name: Retrieve VM Provisioning incidents
+    - name: 1. Search for VM Provisioning Ticket
       servicenow.itsm.incident_info:
         sysparm_query: "short_descriptionLIKEVM Provision"
       register: incident_result
@@ -16,28 +15,23 @@
       ansible.builtin.meta: end_play
       when: incident_result.records | length == 0
 
-    # 2. 将工单标记为处理中 (In Progress)
-    - name: Acknowledge the ticket
+    - name: 2. Acknowledge the ticket
       servicenow.itsm.incident:
         state: in_progress
         number: "{{ incident_result.records[0].number }}"
         other:
           assigned_to: "{{ lookup('env', 'SN_USERNAME') }}"
-          work_notes: "Ansible AAP is extracting full system requirements from the attachment."
 
-    # 3. 获取附件的 sys_id
-    - name: Get attachment sys_id via REST API
+    - name: 3. Get attachment sys_id
       ansible.builtin.uri:
         url: "{{ lookup('env', 'SN_HOST') }}/api/now/table/sys_attachment?sysparm_query=table_sys_id={{ incident_result.records[0].sys_id }}"
         method: GET
         user: "{{ lookup('env', 'SN_USERNAME') }}"
         password: "{{ lookup('env', 'SN_PASSWORD') }}"
         force_basic_auth: yes
-        status_code: 200
       register: api_attach_info
 
-    # 4. 下载附件到 Execution Environment 容器的 /tmp 目录
-    - name: Download attachment to container local tmp
+    - name: 4. Download Excel to /tmp
       servicenow.itsm.attachment_info:
         instance:
           host: "{{ lookup('env', 'SN_HOST') }}"
@@ -46,12 +40,9 @@
         sys_id: "{{ item.sys_id }}"
         dest: "/tmp/Provision_Request_Form_v1.xlsx"
       loop: "{{ api_attach_info.json.result | default([]) }}"
-      when: 
-        - api_attach_info.json is defined
-        - item.file_name == "Provision_Request_Form_v1.xlsx"
+      when: item.file_name == "Provision_Request_Form_v1.xlsx"
 
-    # 5. 使用 Python 自动化扫描所有表格字段
-    - name: Parse Excel into Full Variables List
+    - name: 5. Parse into Structured Object (The Final Polish)
       ansible.builtin.shell: |
         python3 << EOF
         import pandas as pd
@@ -59,50 +50,59 @@
         import re
 
         try:
-            # 忽略表头读取，直接扫描全表
             df = pd.read_excel('/tmp/Provision_Request_Form_v1.xlsx', header=None)
             
-            def extract(key):
-                # 在全表中模糊查找包含该关键字的行，不使用正则以避开括号干扰
+            def extract(key, is_num=False):
                 mask = df.apply(lambda row: row.astype(str).str.contains(key, case=False, regex=False, na=False).any(), axis=1)
                 if not df[mask].empty:
-                    # 获取该行所有非空值，取最后一个作为 Value
                     vals = df[mask].iloc[0].dropna().values
                     if len(vals) > 1:
-                        raw_val = str(vals[-1]).strip()
-                        # 针对 CPU、内存、磁盘等数字字段提取纯数字
-                        if any(x in key for x in ["CPU", "Memory", "Disk", "Size"]):
-                            match = re.search(r'(\d+)', raw_val)
-                            return int(match.group(1)) if match else raw_val
-                        return raw_val
-                return "" # 如果找不到或右侧无值，返回空字符串
+                        raw = str(vals[-1]).strip()
+                        if is_num:
+                            match = re.search(r'(\d+)', raw)
+                            return int(match.group(1)) if match else 0
+                        return raw
+                return 0 if is_num else ""
 
-            # 定义需要对齐的表格清单（严格匹配你截图中的文字）
-            target_keys = [
-                "Server Description", "Application Type", "Platform", "Server Type",
-                "OS Version", "DB Version", "Enable TDE(Y/N)", "HA Protection",
-                "Server Property(s)", "#CPU Cores", "Memory(GB)", "App Disk(GB)",
-                "DB Data Disk M:(GB)", "DB Log Disk L:(GB)", "Total Disk Size(GB)"
-            ]
-
-            # 自动转换变量名：去掉特殊字符，空格换成下划线
-            full_data = { re.sub(r'[^a-zA-Z0-9]', '_', k).lower().strip('_'): extract(k) for k in target_keys }
-            
-            print(json.dumps(full_data))
+            # 构建优化的嵌套结构
+            structured_data = {
+                "server_info": {
+                    "hostname": extract("Server Description"),
+                    "app_type": extract("Application Type"),
+                    "platform": extract("Platform"),
+                    "property": extract("Server Property"),
+                    "os": extract("OS Version")
+                },
+                "vm_specs": {
+                    "cpu": extract("#CPU Cores", is_num=True),
+                    "ram_gb": extract("Memory", is_num=True)
+                },
+                "storage": {
+                    "os_disk_gb": 80, # 默认值
+                    "data_disk_gb": extract("App Disk", is_num=True),
+                    "db_data_gb": extract("DB Data Disk", is_num=True),
+                    "db_log_gb": extract("DB Log Disk", is_num=True),
+                    "total_gb": extract("Total Disk Size", is_num=True)
+                },
+                "db_config": {
+                    "version": extract("DB Version"),
+                    "tde_enabled": extract("Enable TDE"),
+                    "ha_protection": extract("HA Protection")
+                }
+            }
+            print(json.dumps(structured_data))
         except Exception as e:
             print(json.dumps({"error": str(e)}))
         EOF
       register: python_out
 
-    # 6. 将提取到的结构化数据设置为 Workflow 的全局 Artifacts
-    - name: Set stats for the next Playbook (Executioner B)
+    - name: 6. Set stats for Executioner B
       ansible.builtin.set_stats:
         data:
-          provision_vars: "{{ python_out.stdout | from_json }}"
-          snow_incident_number: "{{ incident_result.records[0].number }}"
+          provision_data: "{{ python_out.stdout | from_json }}"
+          snow_ticket: "{{ incident_result.records[0].number }}"
           has_work: true
 
-    # 7. 打印出来确认一眼（方便你在 Job Output 里检查）
-    - name: Show extracted data summary
+    - name: 7. Final Review of Variables
       ansible.builtin.debug:
-        msg: "Extracted full config: {{ python_out.stdout | from_json }}"
+        var: python_out.stdout | from_json
