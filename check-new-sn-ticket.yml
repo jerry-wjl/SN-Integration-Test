@@ -2,11 +2,9 @@
 - name: Sentinel A - Find and Download Provisioning Request
   hosts: localhost
   gather_facts: false
-  collections:
-    - servicenow.itsm
 
   tasks:
-    # 1. 查找工单
+    # 1. 查找工单 (这里还是用 incident_info，因为它之前是成功的)
     - name: Retrieve New VM Provisioning incidents
       servicenow.itsm.incident_info:
         sysparm_query: "state=1^short_descriptionLIKEVM Provision"
@@ -26,26 +24,28 @@
           assigned_to: "{{ lookup('env', 'SN_USERNAME') }}"
       register: updated_incident
 
-    # 4. 【修复点】直接查询附件表，获取该工单关联的附件元数据
-    - name: Get attachment list from sys_attachment table
-      servicenow.itsm.now.table_info:
-        table: sys_attachment
-        query:
-          table_sys_id: "{{ incident_result.records[0].sys_id }}"
-      register: attach_info
+    # 4. 【全兼容修复】使用原生 uri 模块直接查询附件表
+    - name: Get attachment list via REST API
+      ansible.builtin.uri:
+        url: "https://{{ lookup('env', 'SN_HOST') }}/api/now/table/sys_attachment?sysparm_query=table_sys_id={{ incident_result.records[0].sys_id }}"
+        method: GET
+        user: "{{ lookup('env', 'SN_USERNAME') }}"
+        password: "{{ lookup('env', 'SN_PASSWORD') }}"
+        force_basic_auth: yes
+        status_code: 200
+      register: api_attach_info
 
-    # 5. 【修复点】下载附件逻辑
+    # 5. 【全兼容修复】下载附件
     - name: Download the XLS attachment
       ansible.builtin.get_url:
-        # SNOW 附件下载的标准 URL 格式
         url: "https://{{ lookup('env', 'SN_HOST') }}/api/now/attachment/{{ item.sys_id }}/value"
         dest: "/tmp/Provision_Request_Form_v1.xlsx"
         url_username: "{{ lookup('env', 'SN_USERNAME') }}"
         url_password: "{{ lookup('env', 'SN_PASSWORD') }}"
         force_basic_auth: yes
-      loop: "{{ attach_info.records }}"
+      loop: "{{ api_attach_info.json.result }}"
       when: 
-        - attach_info.records | length > 0
+        - api_attach_info.json.result | length > 0
         - item.file_name == "Provision_Request_Form_v1.xlsx"
 
     # 6. 设置变量传递
