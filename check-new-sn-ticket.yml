@@ -8,7 +8,6 @@
   tasks:
     - name: 1. Search for NEW Provisioning Ticket
       servicenow.itsm.incident_info:
-        # 仅匹配状态为 New (1) 的工单
         sysparm_query: "short_descriptionLIKEVM Provision^state=1"
       register: incident_result
 
@@ -19,11 +18,12 @@
     - name: 2. Change State to Active (Numeric 2)
       servicenow.itsm.incident:
         number: "{{ incident_result.records[0].number }}"
-        state: 2  # 对应你看到的 Active
+        state: 2  
         other:
           assigned_to: "{{ lookup('env', 'SN_USERNAME') }}"
           work_notes: "Ansible AAP captured the ticket. Transitioning from New to Active."
 
+    # --- 状态跟踪：打印变更后的状态 ---
     - name: 3. Verify Current State in AAP (Pre-Pause)
       servicenow.itsm.incident_info:
         sysparm_query: "number={{ incident_result.records[0].number }}"
@@ -31,26 +31,34 @@
 
     - name: Show Current State
       ansible.builtin.debug:
-        msg: "The ticket state is now: {{ state_check_pre.records[0].state }} (Display: Active)"
+        msg: "The ticket state is now: {{ state_check_pre.records[0].state }} (UI Display: Active)"
 
-    - name: 4. Download and Parse Excel (Background Work)
-      # 这里包含之前的下载和 Python 解析逻辑（略，见下文完整代码）
-      # ... 
-
-    # --- 你的要求：增加暂停时间 ---
-    - name: 5. PAUSE FOR 30 SECONDS (Wait for UI Sync)
+    # --- 你的要求：在这里增加 30 秒暂停，方便你切去 SN 检查状态 ---
+    - name: 4. PAUSE FOR 30 SECONDS (Check SN UI Now)
       ansible.builtin.pause:
         seconds: 30
-        prompt: "Waiting 30 seconds... Please check ServiceNow UI for 'Active' status."
+        prompt: "STOP! Go to ServiceNow now and verify the state is 'Active'. Resuming in 30s..."
 
-    - name: 6. Parse Excel (Final variables)
+    - name: 5. Download Attachment to local /tmp
+      servicenow.itsm.attachment_info:
+        instance:
+          host: "{{ lookup('env', 'SN_HOST') }}"
+          username: "{{ lookup('env', 'SN_USERNAME') }}"
+          password: "{{ lookup('env', 'SN_PASSWORD') }}"
+        # 仍然需要通过 API 拿 sys_id，确保 ID 链条完整
+        sys_id: "{{ (lookup('url', lookup('env', 'SN_HOST') + '/api/now/table/sys_attachment?sysparm_query=table_sys_id=' + incident_result.records[0].sys_id, split_lines=False, user=lookup('env', 'SN_USERNAME'), password=lookup('env', 'SN_PASSWORD')) | from_json).result[0].sys_id }}"
+        dest: "/tmp/Provision_Request_Form_v1.xlsx"
+
+    - name: 6. Parse Excel into Structured Object
       ansible.builtin.shell: |
         python3 << EOF
         import pandas as pd
         import json
         import re
+
         try:
             df = pd.read_excel('/tmp/Provision_Request_Form_v1.xlsx', header=None)
+            
             def extract(key, is_num=False):
                 mask = df.apply(lambda row: row.astype(str).str.contains(key, case=False, regex=False, na=False).any(), axis=1)
                 if not df[mask].empty:
@@ -62,12 +70,23 @@
                             return int(match.group(1)) if match else 0
                         return raw
                 return 0 if is_num else ""
-            
+
             structured_data = {
-                "ticket_context": {"number": "{{ incident_result.records[0].number }}", "sys_id": "{{ incident_result.records[0].sys_id }}"},
-                "server_info": {"hostname": extract("Server Description"), "os": extract("OS Version")},
-                "vm_specs": {"cpu": extract("#CPU Cores", is_num=True), "ram_gb": extract("Memory", is_num=True)},
-                "storage": {"total_gb": extract("Total Disk Size", is_num=True)}
+                "ticket_context": {
+                    "number": "{{ incident_result.records[0].number }}",
+                    "sys_id": "{{ incident_result.records[0].sys_id }}"
+                },
+                "server_info": {
+                    "hostname": extract("Server Description"),
+                    "os": extract("OS Version")
+                },
+                "vm_specs": {
+                    "cpu": extract("#CPU Cores", is_num=True),
+                    "ram_gb": extract("Memory", is_num=True)
+                },
+                "storage": {
+                    "total_gb": extract("Total Disk Size", is_num=True)
+                }
             }
             print(json.dumps(structured_data))
         except Exception as e:
@@ -75,13 +94,16 @@
         EOF
       register: python_out
 
-    - name: 7. Final Update and Set Stats
+    - name: 7. Set stats for Executioner B
       ansible.builtin.set_stats:
         data:
           provision_data: "{{ python_out.stdout | from_json }}"
-      
-    - name: 8. Update Ticket Notes with Result
+          has_work: true
+
+    - name: 8. Final Update Ticket with Extraction Report
       servicenow.itsm.incident:
         sys_id: "{{ incident_result.records[0].sys_id }}"
         other:
-          work_notes: "Parsing complete. Data: {{ python_out.stdout }}"
+          work_notes: |
+            [SENTINEL REPORT] Extraction complete during 'Active' state.
+            CPU: {{ (python_out.stdout | from_json).vm_specs.cpu }} | RAM: {{ (python_out.stdout | from_json).vm_specs.ram_gb }}GB.
