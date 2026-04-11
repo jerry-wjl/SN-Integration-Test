@@ -2,6 +2,8 @@
 - name: Sentinel A - Find and Download Provisioning Request
   hosts: localhost
   gather_facts: false
+  collections:
+    - servicenow.itsm
 
   tasks:
     - name: 1. Retrieve VM Provisioning incidents
@@ -19,36 +21,40 @@
         number: "{{ incident_result.records[0].number }}"
         other:
           assigned_to: "{{ lookup('env', 'SN_USERNAME') }}"
-      register: updated_incident
 
-    - name: 4. Get attachment list via REST API
-      ansible.builtin.uri:
-        url: "{{ lookup('env', 'SN_HOST') }}/api/now/table/sys_attachment?sysparm_query=table_sys_id={{ incident_result.records[0].sys_id }}"
-        method: GET
-        user: "{{ lookup('env', 'SN_USERNAME') }}"
-        password: "{{ lookup('env', 'SN_PASSWORD') }}"
-        force_basic_auth: yes
-        status_code: 200
-      register: api_attach_info
+    # 在 Xanadu 版本，我们用 table_info 模块精准定位附件
+    - name: 4. Get Attachment Sys_ID from metadata table
+      servicenow.itsm.now.table_info:
+        table: sys_attachment
+        query:
+          table_sys_id: "{{ incident_result.records[0].sys_id }}"
+      register: sn_attachment_table
 
-    - name: 5. 【修复版】Download the XLS attachment using uri module
-      ansible.builtin.uri:
-        url: "{{ lookup('env', 'SN_HOST') }}/api/now/attachment/{{ item.sys_id }}/value"
-        method: GET
-        user: "{{ lookup('env', 'SN_USERNAME') }}"
-        password: "{{ lookup('env', 'SN_PASSWORD') }}"
-        force_basic_auth: yes
-        # 关键设置：直接保存到文件，绕过 get_url 的解析问题
+    - name: 5. Download using official attachment module
+      servicenow.itsm.now.attachment:
+        # 确保 host 只是域名，例如：ansible.service-now.com
+        instance:
+          host: "{{ lookup('env', 'SN_HOST') | regex_replace('^https?://', '') }}"
+          username: "{{ lookup('env', 'SN_USERNAME') }}"
+          password: "{{ lookup('env', 'SN_PASSWORD') }}"
+        # 传入附件本身的 sys_id
+        sys_id: "{{ item.sys_id }}"
+        # 落地路径
         dest: "/tmp/Provision_Request_Form_v1.xlsx"
-        status_code: 200
-      loop: "{{ api_attach_info.json.result | default([]) }}"
+        state: present
+      loop: "{{ sn_attachment_table.records }}"
       when: 
-        - api_attach_info.json is defined
+        - sn_attachment_table.records | length > 0
         - item.file_name == "Provision_Request_Form_v1.xlsx"
 
-    - name: 6. Set stats for the next Playbook
+    - name: 6. Verify File Download
+      ansible.builtin.stat:
+        path: "/tmp/Provision_Request_Form_v1.xlsx"
+      register: file_stat
+
+    - name: 7. Set stats for the next Playbook
       ansible.builtin.set_stats:
         data:
           snow_ticket_number: "{{ incident_result.records[0].number }}"
           local_excel_path: "/tmp/Provision_Request_Form_v1.xlsx"
-          has_work: true
+          has_work: "{{ file_stat.stat.exists }}"
