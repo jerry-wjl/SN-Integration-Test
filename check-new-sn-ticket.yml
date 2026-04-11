@@ -6,50 +6,52 @@
     - servicenow.itsm
 
   tasks:
-    # 1. 使用 sysparm_query 绕过复杂的格式转换报错，直接执行查询
+    # 1. 查找工单
     - name: Retrieve New VM Provisioning incidents
       servicenow.itsm.incident_info:
         sysparm_query: "state=1^short_descriptionLIKEVM Provision"
       register: incident_result
 
-    # 2. 检查是否有活干：如果没有发现符合条件的工单，优雅结束
+    # 2. 没活干优雅退出
     - name: End play if no new tickets found
       ansible.builtin.meta: end_play
       when: incident_result.records | length == 0
 
-    # 3. 接单：立即将工单状态改为 In Progress(2)
-    - name: Acknowledge the ticket (Move to In Progress)
+    # 3. 接单 (Acknowledge)
+    - name: Acknowledge the ticket
       servicenow.itsm.incident:
         state: in_progress
         number: "{{ incident_result.records[0].number }}"
         other:
           assigned_to: "{{ lookup('env', 'SN_USERNAME') }}"
-          comments: "Ansible AAP has picked up this ticket for automated provisioning."
       register: updated_incident
 
-    # 4. 寻找附件：获取该工单关联的附件元数据
-    - name: Get attachment metadata for the incident
-      servicenow.itsm.attachment_info:
-        table_sys_id: "{{ incident_result.records[0].sys_id }}"
+    # 4. 【修复点】直接查询附件表，获取该工单关联的附件元数据
+    - name: Get attachment list from sys_attachment table
+      servicenow.itsm.now.table_info:
+        table: sys_attachment
+        query:
+          table_sys_id: "{{ incident_result.records[0].sys_id }}"
       register: attach_info
 
-    # 5. 下载附件：从元数据中提取下载链接，并存入容器本地
+    # 5. 【修复点】下载附件逻辑
     - name: Download the XLS attachment
       ansible.builtin.get_url:
-        url: "{{ item.download_link }}"
+        # SNOW 附件下载的标准 URL 格式
+        url: "https://{{ lookup('env', 'SN_HOST') }}/api/now/attachment/{{ item.sys_id }}/value"
         dest: "/tmp/Provision_Request_Form_v1.xlsx"
         url_username: "{{ lookup('env', 'SN_USERNAME') }}"
         url_password: "{{ lookup('env', 'SN_PASSWORD') }}"
         force_basic_auth: yes
       loop: "{{ attach_info.records }}"
-      # 确保只下载你上传的那个特定文件
-      when: item.file_name == "Provision_Request_Form_v1.xlsx"
+      when: 
+        - attach_info.records | length > 0
+        - item.file_name == "Provision_Request_Form_v1.xlsx"
 
-    # 6. 设置 Workflow 统计信息，将关键变量传递给后续节点
-    - name: Set stats for the next Playbook (Workflow B)
+    # 6. 设置变量传递
+    - name: Set stats for the next Playbook
       ansible.builtin.set_stats:
         data:
           snow_ticket_number: "{{ incident_result.records[0].number }}"
-          snow_ticket_sys_id: "{{ incident_result.records[0].sys_id }}"
           local_excel_path: "/tmp/Provision_Request_Form_v1.xlsx"
           has_work: true
