@@ -4,46 +4,47 @@
   gather_facts: false
 
   tasks:
-    - name: 1. Retrieve VM Provisioning incidents (Search by Keyword)
+    - name: 1. Retrieve VM Provisioning incidents
       servicenow.itsm.incident_info:
-        # 去掉了 state=1 的限制，只要标题匹配就抓取，方便测试
         sysparm_query: "short_descriptionLIKEVM Provision"
       register: incident_result
 
     - name: 2. DEBUG - Print ALL Incident Information
       ansible.builtin.debug:
         var: incident_result
-        # 这会打印出 JSON 全文，你可以看到所有字段名
+        # 你可以在输出中找 sys_id, number, state 等字段
 
     - name: 3. End play if no tickets found
       ansible.builtin.meta: end_play
       when: incident_result.records | length == 0
 
-    - name: 4. Acknowledge the ticket (Force to In Progress)
+    - name: 4. Acknowledge the ticket
       servicenow.itsm.incident:
         state: in_progress
         number: "{{ incident_result.records[0].number }}"
         other:
           assigned_to: "{{ lookup('env', 'SN_USERNAME') }}"
-          work_notes: "Ansible AAP captured this ticket for debugging."
       register: updated_incident
 
-    - name: 5. Get attachment list via REST API
+    - name: 5. 【已修复】Get attachment list via REST API
       ansible.builtin.uri:
-        url: "https://{{ lookup('env', 'SN_HOST') }}/api/now/table/sys_attachment?sysparm_query=table_sys_id={{ incident_result.records[0].sys_id }}"
+        # 去掉了多余的 https://，直接使用变量
+        url: "{{ lookup('env', 'SN_HOST') }}/api/now/table/sys_attachment?sysparm_query=table_sys_id={{ incident_result.records[0].sys_id }}"
         method: GET
         user: "{{ lookup('env', 'SN_USERNAME') }}"
         password: "{{ lookup('env', 'SN_PASSWORD') }}"
         force_basic_auth: yes
+        status_code: 200
       register: api_attach_info
 
     - name: 6. DEBUG - Print Attachment Metadata
       ansible.builtin.debug:
         var: api_attach_info.json
 
-    - name: 7. Download the XLS attachment
+    - name: 7. 【已修复】Download the XLS attachment
       ansible.builtin.get_url:
-        url: "https://{{ lookup('env', 'SN_HOST') }}/api/now/attachment/{{ item.sys_id }}/value"
+        # 同样去掉多余的 https://
+        url: "{{ lookup('env', 'SN_HOST') }}/api/now/attachment/{{ item.sys_id }}/value"
         dest: "/tmp/Provision_Request_Form_v1.xlsx"
         url_username: "{{ lookup('env', 'SN_USERNAME') }}"
         url_password: "{{ lookup('env', 'SN_PASSWORD') }}"
