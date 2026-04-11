@@ -6,11 +6,12 @@
     - servicenow.itsm
 
   tasks:
-    # 1. 周期性查询：找状态为 New 且标题匹配的工单
+    # 1. 修改后的写法（字典）：
     - name: Retrieve New VM Provisioning incidents
       servicenow.itsm.incident_info:
-        # 这里的 query 是关键：找状态为 New(1) 且标题包含 "VM Provision"
-        query: "state=1^short_descriptionLIKEVM Provision"
+        query:
+          state: "1"
+          short_description: "LIKEVM Provision"
       register: incident_result
 
     # 2. 检查是否有活干：如果没有发现符合条件的工单，优雅结束
