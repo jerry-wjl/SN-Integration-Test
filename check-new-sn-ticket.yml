@@ -1,60 +1,65 @@
 ---
-- name: Sentinel A - Find and Download Provisioning Request
+- name: Sentinel A - Find and Download Provisioning Request (Collection 2.2 optimized)
   hosts: localhost
   gather_facts: false
   collections:
     - servicenow.itsm
 
   tasks:
-    - name: 1. Retrieve VM Provisioning incidents
+    # 1. 查找工单（已知可用）
+    - name: Retrieve VM Provisioning incidents
       servicenow.itsm.incident_info:
         sysparm_query: "short_descriptionLIKEVM Provision"
       register: incident_result
 
-    - name: 2. End play if no tickets found
+    - name: End play if no tickets found
       ansible.builtin.meta: end_play
       when: incident_result.records | length == 0
 
-    - name: 3. Acknowledge the ticket
+    # 2. 接单
+    - name: Acknowledge the ticket
       servicenow.itsm.incident:
         state: in_progress
         number: "{{ incident_result.records[0].number }}"
         other:
           assigned_to: "{{ lookup('env', 'SN_USERNAME') }}"
 
-    # 在 Xanadu 版本，我们用 table_info 模块精准定位附件
-    - name: 4. Get Attachment Sys_ID from metadata table
-      servicenow.itsm.now.table_info:
-        table: sys_attachment
-        query:
-          table_sys_id: "{{ incident_result.records[0].sys_id }}"
-      register: sn_attachment_table
+    # 3. 使用 uri 模块获取【附件本身的 sys_id】
+    # 因为 2.2 版本缺少 table_info 模块，这是获取附件 ID 的最稳方式
+    - name: Get attachment sys_id via REST API
+      ansible.builtin.uri:
+        url: "{{ lookup('env', 'SN_HOST') }}/api/now/table/sys_attachment?sysparm_query=table_sys_id={{ incident_result.records[0].sys_id }}"
+        method: GET
+        user: "{{ lookup('env', 'SN_USERNAME') }}"
+        password: "{{ lookup('env', 'SN_PASSWORD') }}"
+        force_basic_auth: yes
+        status_code: 200
+      register: api_attach_info
 
-    - name: 5. Download using official attachment module
-      servicenow.itsm.now.attachment:
-        # 确保 host 只是域名，例如：ansible.service-now.com
+    # 4. 使用你查到的官方 2.2 模块执行下载
+    # 注意：这里调用的是 servicenow.itsm.attachment_info
+    - name: Download attachment using 2.2 module
+      servicenow.itsm.attachment_info:
         instance:
-          host: "{{ lookup('env', 'SN_HOST') | regex_replace('^https?://', '') }}"
+          host: "{{ lookup('env', 'SN_HOST') }}"
           username: "{{ lookup('env', 'SN_USERNAME') }}"
           password: "{{ lookup('env', 'SN_PASSWORD') }}"
-        # 传入附件本身的 sys_id
         sys_id: "{{ item.sys_id }}"
-        # 落地路径
         dest: "/tmp/Provision_Request_Form_v1.xlsx"
-        state: present
-      loop: "{{ sn_attachment_table.records }}"
+      loop: "{{ api_attach_info.json.result | default([]) }}"
       when: 
-        - sn_attachment_table.records | length > 0
+        - api_attach_info.json is defined
         - item.file_name == "Provision_Request_Form_v1.xlsx"
 
-    - name: 6. Verify File Download
+    # 5. 验证并传递状态
+    - name: Verify download
       ansible.builtin.stat:
         path: "/tmp/Provision_Request_Form_v1.xlsx"
-      register: file_stat
+      register: file_check
 
-    - name: 7. Set stats for the next Playbook
+    - name: Set stats for workflow
       ansible.builtin.set_stats:
         data:
           snow_ticket_number: "{{ incident_result.records[0].number }}"
           local_excel_path: "/tmp/Provision_Request_Form_v1.xlsx"
-          has_work: "{{ file_stat.stat.exists }}"
+          has_work: "{{ file_check.stat.exists }}"
