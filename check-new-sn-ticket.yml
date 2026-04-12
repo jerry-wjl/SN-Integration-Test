@@ -1,9 +1,13 @@
 ---
-- name: Sentinel A - Refined Listener
+- name: Sentinel A - Secure File Handling
   hosts: localhost
   gather_facts: false
   collections:
     - servicenow.itsm
+
+  vars:
+    # 显式定义工作路径，避开文件名可能的编码问题
+    local_excel_path: "/tmp/Provision_Request_Form_v1.xlsx"
 
   tasks:
     - name: 1. Poll for NEW Tickets
@@ -11,25 +15,25 @@
         sysparm_query: "short_descriptionLIKEVM Provision^state=1"
       register: incident_result
 
-    - name: Handle No Work Scenario
-      block:
-        - name: Set no-work flag
-          ansible.builtin.set_stats:
-            data:
-              has_work: false
-        - name: End play quietly
-          ansible.builtin.meta: end_play
+    - name: Handle No Work
+      ansible.builtin.set_stats:
+        data:
+          has_work: false
       when: incident_result.records | length == 0
 
-    - name: 2. Process Ticket
+    - name: End play quietly
+      ansible.builtin.meta: end_play
+      when: incident_result.records | length == 0
+
+    - name: 2. Capture and Move to Active
       servicenow.itsm.incident:
         number: "{{ incident_result.records[0].number }}"
-        state: 2  # Active
+        state: 2 
         other:
           assigned_to: "{{ lookup('env', 'SN_USERNAME') }}"
-          work_notes: "Processing started by AAP Workflow."
+          work_notes: "AAP Workflow: Starting extraction process."
 
-    - name: 3. Get Attachment ID
+    - name: 3. Get Attachment metadata
       ansible.builtin.uri:
         url: "{{ lookup('env', 'SN_HOST') }}/api/now/table/sys_attachment?sysparm_query=table_sys_id={{ incident_result.records[0].sys_id }}"
         method: GET
@@ -38,22 +42,52 @@
         force_basic_auth: yes
       register: api_attach_info
 
-    - name: 4. Download and Parse Full Data
+    - name: 4. Download Excel Attachment
+      servicenow.itsm.attachment_info:
+        instance:
+          host: "{{ lookup('env', 'SN_HOST') }}"
+          username: "{{ lookup('env', 'SN_USERNAME') }}"
+          password: "{{ lookup('env', 'SN_PASSWORD') }}"
+        sys_id: "{{ api_attach_info.json.result[0].sys_id }}"
+        # 强制指定路径
+        dest: "{{ local_excel_path }}"
+
+    # ！！！关键步骤：在跑 Python 前，确认文件是否存在 ！！！
+    - name: 5. Verify File Existence
+      ansible.builtin.stat:
+        path: "{{ local_excel_path }}"
+      register: file_check
+
+    - name: Fail if file download failed
+      ansible.builtin.fail:
+        msg: "The file was not found at {{ local_excel_path }} even after download task!"
+      when: not file_check.stat.exists
+
+    - name: 6. Parse Excel via Python
       ansible.builtin.shell: |
         python3 << EOF
         import pandas as pd
         import json
         import re
+        import os
+
+        target_file = "{{ local_excel_path }}"
+        
         try:
-            df = pd.read_excel('/tmp/Provision_Request_Form_v1.xlsx', header=None)
+            # 再次确认
+            if not os.path.exists(target_file):
+                raise FileNotFoundError(f"Python cannot see the file at {target_file}")
+
+            df = pd.read_excel(target_file, header=None)
+            
             def extract(key):
-                mask = df.apply(lambda row: row.astype(str).str.contains(key, case=False, regex=False, na=False).any(), axis=1)
+                # 模糊匹配逻辑，增加对特殊字符的容错
+                mask = df.apply(lambda row: row.astype(str).str.contains(key, case=False, na=False).any(), axis=1)
                 if not df[mask].empty:
                     vals = df[mask].iloc[0].dropna().values
                     return str(vals[-1]).strip() if len(vals) > 1 else ""
-                return ""
+                return "N/A"
 
-            # 这里的清单包含了你之前提到的所有字段
             keys = [
                 "Server Description", "Application Type", "Platform", "Server Type",
                 "OS Version", "DB Version", "Enable TDE", "HA Protection",
@@ -61,7 +95,6 @@
                 "DB Data Disk", "DB Log Disk", "Total Disk Size"
             ]
             
-            # 这里的 key 转换成 python 友好的下划线格式
             full_results = { re.sub(r'[^a-zA-Z0-9]', '_', k).lower().strip('_'): extract(k) for k in keys }
             
             output = {
@@ -77,7 +110,7 @@
         EOF
       register: python_out
 
-    - name: 5. Handover All Data
+    - name: 7. Handover to Workflow
       ansible.builtin.set_stats:
         data:
           provision_data: "{{ python_out.stdout | from_json }}"
