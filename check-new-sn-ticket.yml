@@ -1,50 +1,44 @@
 ---
-- name: Sentinel A - Automated Incident Listener
+- name: Sentinel A - Refined Listener
   hosts: localhost
   gather_facts: false
   collections:
     - servicenow.itsm
 
   tasks:
-    - name: 1. Poll ServiceNow for NEW VM Provisioning Tickets
+    - name: 1. Poll for NEW Tickets
       servicenow.itsm.incident_info:
         sysparm_query: "short_descriptionLIKEVM Provision^state=1"
       register: incident_result
 
-    # --- 逻辑 B：如果没有新工单，直接优雅结束当前 Playbook ---
-    - name: Stop if no new tickets found
-      ansible.builtin.meta: end_play
+    - name: Handle No Work Scenario
+      block:
+        - name: Set no-work flag
+          ansible.builtin.set_stats:
+            data:
+              has_work: false
+        - name: End play quietly
+          ansible.builtin.meta: end_play
       when: incident_result.records | length == 0
 
-    # --- 逻辑 A：发现工单，开始处理 ---
-    - name: 2. Capture and Acknowledge the Ticket (Move to Active)
+    - name: 2. Process Ticket
       servicenow.itsm.incident:
         number: "{{ incident_result.records[0].number }}"
         state: 2  # Active
         other:
           assigned_to: "{{ lookup('env', 'SN_USERNAME') }}"
-          work_notes: "AAP Schedule: Ticket captured and processing started."
+          work_notes: "Processing started by AAP Workflow."
 
-    - name: 3. Get attachment metadata via REST
+    - name: 3. Get Attachment ID
       ansible.builtin.uri:
         url: "{{ lookup('env', 'SN_HOST') }}/api/now/table/sys_attachment?sysparm_query=table_sys_id={{ incident_result.records[0].sys_id }}"
         method: GET
         user: "{{ lookup('env', 'SN_USERNAME') }}"
         password: "{{ lookup('env', 'SN_PASSWORD') }}"
         force_basic_auth: yes
-        status_code: 200
       register: api_attach_info
 
-    - name: 4. Download Excel Attachment
-      servicenow.itsm.attachment_info:
-        instance:
-          host: "{{ lookup('env', 'SN_HOST') }}"
-          username: "{{ lookup('env', 'SN_USERNAME') }}"
-          password: "{{ lookup('env', 'SN_PASSWORD') }}"
-        sys_id: "{{ api_attach_info.json.result[0].sys_id }}"
-        dest: "/tmp/Provision_Request_Form_v1.xlsx"
-
-    - name: 5. Parse Excel via Python
+    - name: 4. Download and Parse Full Data
       ansible.builtin.shell: |
         python3 << EOF
         import pandas as pd
@@ -52,49 +46,39 @@
         import re
         try:
             df = pd.read_excel('/tmp/Provision_Request_Form_v1.xlsx', header=None)
-            def extract(key, is_num=False):
+            def extract(key):
                 mask = df.apply(lambda row: row.astype(str).str.contains(key, case=False, regex=False, na=False).any(), axis=1)
                 if not df[mask].empty:
                     vals = df[mask].iloc[0].dropna().values
-                    if len(vals) > 1:
-                        raw = str(vals[-1]).strip()
-                        if is_num:
-                            match = re.search(r'(\d+)', raw)
-                            return int(match.group(1)) if match else 0
-                        return raw
-                return 0 if is_num else ""
+                    return str(vals[-1]).strip() if len(vals) > 1 else ""
+                return ""
 
-            data = {
+            # 这里的清单包含了你之前提到的所有字段
+            keys = [
+                "Server Description", "Application Type", "Platform", "Server Type",
+                "OS Version", "DB Version", "Enable TDE", "HA Protection",
+                "Server Property", "#CPU Cores", "Memory", "App Disk", 
+                "DB Data Disk", "DB Log Disk", "Total Disk Size"
+            ]
+            
+            # 这里的 key 转换成 python 友好的下划线格式
+            full_results = { re.sub(r'[^a-zA-Z0-9]', '_', k).lower().strip('_'): extract(k) for k in keys }
+            
+            output = {
                 "ticket_context": {
                     "number": "{{ incident_result.records[0].number }}",
                     "sys_id": "{{ incident_result.records[0].sys_id }}"
                 },
-                "server_info": {
-                    "hostname": extract("Server Description"),
-                    "os": extract("OS Version")
-                },
-                "vm_specs": {
-                    "cpu": extract("#CPU Cores", is_num=True),
-                    "ram_gb": extract("Memory", is_num=True)
-                },
-                "storage": {
-                    "total_gb": extract("Total Disk Size", is_num=True)
-                }
+                "all_specs": full_results
             }
-            print(json.dumps(data))
+            print(json.dumps(output))
         except Exception as e:
             print(json.dumps({"error": str(e)}))
         EOF
       register: python_out
 
-    - name: 6. Handover Variables to Workflow
+    - name: 5. Handover All Data
       ansible.builtin.set_stats:
         data:
           provision_data: "{{ python_out.stdout | from_json }}"
           has_work: true
-
-    - name: 7. Log Success to ServiceNow
-      servicenow.itsm.incident:
-        sys_id: "{{ incident_result.records[0].sys_id }}"
-        other:
-          work_notes: "AAP successfully extracted variables. Ready for Provisioning."
