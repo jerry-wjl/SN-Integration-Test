@@ -1,26 +1,26 @@
 ---
-- name: Executioner B - Requirement Presentation
+- name: Executioner B - Full Details Display
   hosts: localhost
   gather_facts: false
 
   tasks:
-    - name: Display Extracted Provisioning Requirements
+    # 增加防护：如果 has_work 不存在或为 false，则跳过
+    - name: Check if there is data to process
+      ansible.builtin.meta: end_play
+      when: not (has_work | default(false) | bool)
+
+    - name: Display Full Provisioning Requirements
       ansible.builtin.debug:
         msg: 
           - "=========================================="
-          - "   PROVISIONING REQUIREMENTS DASHBOARD    "
+          - "   FULL PROVISIONING DASHBOARD            "
           - "=========================================="
-          - "SOURCE TICKET: {{ provision_data.ticket_context.number }}"
-          - "TARGET HOST  : {{ provision_data.server_info.hostname }}"
-          - "OPERATING SYS: {{ provision_data.server_info.os }}"
+          - "SOURCE TICKET : {{ provision_data.ticket_context.number }}"
           - "------------------------------------------"
-          - "HARDWARE SPECS:"
-          - "  - CPU CORES: {{ provision_data.vm_specs.cpu }}"
-          - "  - RAM (GB) : {{ provision_data.vm_specs.ram_gb }}"
-          - "  - DISK (GB): {{ provision_data.storage.total_gb }}"
+          - "EXTRACTED DATA FROM EXCEL:"
+          - "{{ provision_data.all_specs | dict2items | map('attribute', 'key') | zip(provision_data.all_specs.values()) | list }}"
           - "=========================================="
 
-    - name: Verification Statement
-      ansible.builtin.pause:
-        seconds: 5
-        prompt: "Data integrity verified. Ready to trigger VMware API (Simulation Mode)."
+    - name: Summary Table (Key Specs)
+      ansible.builtin.debug:
+        msg: "Target: {{ provision_data.all_specs.server_description }} | OS: {{ provision_data.all_specs.os_version }} | CPU: {{ provision_data.all_specs.cpu_cores }}"
