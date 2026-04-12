@@ -4,23 +4,38 @@
   gather_facts: false
 
   tasks:
-    # 增加防护：如果 has_work 不存在或为 false，则跳过
-    - name: Check if there is data to process
+    # 1. 强制刷新变量并进行存在性检查
+    - name: Pre-check variable availability
+      ansible.builtin.set_fact:
+        # 如果 provision_data 不存在，则赋予一个空的框架，防止直接 Crash
+        local_provision_data: "{{ provision_data | default({}) }}"
+      
+    # 2. 逻辑保护：如果没有数据或 has_work 不为真，则静默退出
+    - name: Stop if no work to process
       ansible.builtin.meta: end_play
-      when: not (has_work | default(false) | bool)
+      when: 
+        - not (has_work | default(false) | bool) or (local_provision_data == {})
 
+    # 3. 打印全量变量（优化排版版）
     - name: Display Full Provisioning Requirements
       ansible.builtin.debug:
         msg: 
           - "=========================================="
           - "   FULL PROVISIONING DASHBOARD            "
           - "=========================================="
-          - "SOURCE TICKET : {{ provision_data.ticket_context.number }}"
+          - "SOURCE TICKET : {{ local_provision_data.ticket_context.number | default('N/A') }}"
+          - "SYS ID        : {{ local_provision_data.ticket_context.sys_id | default('N/A') }}"
           - "------------------------------------------"
-          - "EXTRACTED DATA FROM EXCEL:"
-          - "{{ provision_data.all_specs | dict2items | map('attribute', 'key') | zip(provision_data.all_specs.values()) | list }}"
+          - "EXTRACTED SPECS FROM EXCEL:"
+          # 使用更加健壮的循环方式打印 all_specs
+          - "{{ local_provision_data.all_specs | default({}) }}"
           - "=========================================="
 
-    - name: Summary Table (Key Specs)
+    # 4. 关键指标独立展示（方便演示给客户看）
+    - name: Summary of Key Assets
       ansible.builtin.debug:
-        msg: "Target: {{ provision_data.all_specs.server_description }} | OS: {{ provision_data.all_specs.os_version }} | CPU: {{ provision_data.all_specs.cpu_cores }}"
+        msg: 
+          - "Hostname: {{ local_provision_data.all_specs.server_description | default('Unknown') }}"
+          - "OS      : {{ local_provision_data.all_specs.os_version | default('Unknown') }}"
+          - "CPU     : {{ local_provision_data.all_specs.cpu_cores | default('0') }} vCPU"
+          - "RAM     : {{ local_provision_data.all_specs.memory | default('0') }} GB"
