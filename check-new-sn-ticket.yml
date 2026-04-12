@@ -1,45 +1,31 @@
 ---
-- name: Sentinel A - Debug Mode (Fixed Auth & Pause)
+- name: Sentinel A - Automated Incident Listener
   hosts: localhost
   gather_facts: false
   collections:
     - servicenow.itsm
 
   tasks:
-    - name: 1. Search for NEW Provisioning Ticket
+    - name: 1. Poll ServiceNow for NEW VM Provisioning Tickets
       servicenow.itsm.incident_info:
         sysparm_query: "short_descriptionLIKEVM Provision^state=1"
       register: incident_result
 
-    - name: End play if no tickets found
+    # --- 逻辑 B：如果没有新工单，直接优雅结束当前 Playbook ---
+    - name: Stop if no new tickets found
       ansible.builtin.meta: end_play
       when: incident_result.records | length == 0
 
-    - name: 2. Change State to Active (Numeric 2)
+    # --- 逻辑 A：发现工单，开始处理 ---
+    - name: 2. Capture and Acknowledge the Ticket (Move to Active)
       servicenow.itsm.incident:
         number: "{{ incident_result.records[0].number }}"
-        state: 2  
+        state: 2  # Active
         other:
           assigned_to: "{{ lookup('env', 'SN_USERNAME') }}"
-          work_notes: "Ansible AAP captured the ticket. Transitioning from New to Active."
+          work_notes: "AAP Schedule: Ticket captured and processing started."
 
-    - name: 3. Verify Current State in AAP (Pre-Pause)
-      servicenow.itsm.incident_info:
-        sysparm_query: "number={{ incident_result.records[0].number }}"
-      register: state_check_pre
-
-    - name: Show Current State
-      ansible.builtin.debug:
-        msg: "The ticket state is now: {{ state_check_pre.records[0].state }} (UI Display: Active)"
-
-    # --- 暂停 30 秒，方便你观察 SN 界面 ---
-    - name: 4. PAUSE FOR 30 SECONDS
-      ansible.builtin.pause:
-        seconds: 30
-        prompt: "STOP! Go to ServiceNow now and verify the state is 'Active'. Resuming in 30s..."
-
-    # --- 重新使用稳健的 uri 模块获取附件 ID，避免 401 错误 ---
-    - name: 5. Get attachment sys_id via REST API
+    - name: 3. Get attachment metadata via REST
       ansible.builtin.uri:
         url: "{{ lookup('env', 'SN_HOST') }}/api/now/table/sys_attachment?sysparm_query=table_sys_id={{ incident_result.records[0].sys_id }}"
         method: GET
@@ -49,7 +35,7 @@
         status_code: 200
       register: api_attach_info
 
-    - name: 6. Download Attachment to local /tmp
+    - name: 4. Download Excel Attachment
       servicenow.itsm.attachment_info:
         instance:
           host: "{{ lookup('env', 'SN_HOST') }}"
@@ -58,16 +44,14 @@
         sys_id: "{{ api_attach_info.json.result[0].sys_id }}"
         dest: "/tmp/Provision_Request_Form_v1.xlsx"
 
-    - name: 7. Parse Excel into Structured Object
+    - name: 5. Parse Excel via Python
       ansible.builtin.shell: |
         python3 << EOF
         import pandas as pd
         import json
         import re
-
         try:
             df = pd.read_excel('/tmp/Provision_Request_Form_v1.xlsx', header=None)
-            
             def extract(key, is_num=False):
                 mask = df.apply(lambda row: row.astype(str).str.contains(key, case=False, regex=False, na=False).any(), axis=1)
                 if not df[mask].empty:
@@ -103,14 +87,14 @@
         EOF
       register: python_out
 
-    - name: 8. Set stats for Executioner B
+    - name: 6. Handover Variables to Workflow
       ansible.builtin.set_stats:
         data:
           provision_data: "{{ python_out.stdout | from_json }}"
           has_work: true
 
-    - name: 9. Final Update Ticket Report
+    - name: 7. Log Success to ServiceNow
       servicenow.itsm.incident:
         sys_id: "{{ incident_result.records[0].sys_id }}"
         other:
-          work_notes: "Final Check: Data extracted successfully during Active state."
+          work_notes: "AAP successfully extracted variables. Ready for Provisioning."
