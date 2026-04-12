@@ -1,0 +1,26 @@
+---
+- name: Executioner B - Requirement Presentation
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Display Extracted Provisioning Requirements
+      ansible.builtin.debug:
+        msg: 
+          - "=========================================="
+          - "   PROVISIONING REQUIREMENTS DASHBOARD    "
+          - "=========================================="
+          - "SOURCE TICKET: {{ provision_data.ticket_context.number }}"
+          - "TARGET HOST  : {{ provision_data.server_info.hostname }}"
+          - "OPERATING SYS: {{ provision_data.server_info.os }}"
+          - "------------------------------------------"
+          - "HARDWARE SPECS:"
+          - "  - CPU CORES: {{ provision_data.vm_specs.cpu }}"
+          - "  - RAM (GB) : {{ provision_data.vm_specs.ram_gb }}"
+          - "  - DISK (GB): {{ provision_data.storage.total_gb }}"
+          - "=========================================="
+
+    - name: Verification Statement
+      ansible.builtin.pause:
+        seconds: 5
+        prompt: "Data integrity verified. Ready to trigger VMware API (Simulation Mode)."
