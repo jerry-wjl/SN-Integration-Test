@@ -1,42 +1,37 @@
 ---
-- name: Sentinel A - Recursive Queue Processor
+- name: Sentinel A - Secure File Handling
   hosts: localhost
   gather_facts: false
   collections:
     - servicenow.itsm
 
   vars:
+    # 显式定义工作路径，避开文件名可能的编码问题
     local_excel_path: "/tmp/Provision_Request_Form_v1.xlsx"
-    # --- 递归配置 ---
-    # 请在 AAP 界面查看此 Workflow 模板的 ID，并在执行时通过变量或环境变量传入
-    # 或者直接在这里硬编码测试（例如：42）
-    workflow_template_id: "{{ lookup('env', 'WF_TEMPLATE_ID') | default('1') }}"
-    aap_api_url: "{{ lookup('env', 'SN_HOST') | regex_replace('servicenow.com', 'controller.example.com') }}" # 这里的逻辑请按实际 AAP 地址修改
 
   tasks:
-    - name: 1. Poll for ALL New Tickets
+    - name: 1. Poll for NEW Tickets
       servicenow.itsm.incident_info:
         sysparm_query: "short_descriptionLIKEVM Provision^state=1"
       register: incident_result
 
-    - name: Handle Empty Queue
+    - name: Handle No Work
       ansible.builtin.set_stats:
         data:
           has_work: false
       when: incident_result.records | length == 0
 
-    - name: End Play if No Work
+    - name: End play quietly
       ansible.builtin.meta: end_play
       when: incident_result.records | length == 0
 
-    # --- 核心逻辑：只锁定列表中的第一个工单进行处理 ---
-    - name: 2. Process First Ticket in Queue
+    - name: 2. Capture and Move to Active
       servicenow.itsm.incident:
         number: "{{ incident_result.records[0].number }}"
         state: 2 
         other:
           assigned_to: "{{ lookup('env', 'SN_USERNAME') }}"
-          work_notes: "AAP Dispatcher: Processing this ticket. (Remaining in queue: {{ incident_result.records | length - 1 }})"
+          work_notes: "AAP Workflow: Starting extraction process."
 
     - name: 3. Get Attachment metadata
       ansible.builtin.uri:
@@ -47,32 +42,59 @@
         force_basic_auth: yes
       register: api_attach_info
 
-    - name: 4. Download Excel
+    - name: 4. Download Excel Attachment
       servicenow.itsm.attachment_info:
         instance:
           host: "{{ lookup('env', 'SN_HOST') }}"
           username: "{{ lookup('env', 'SN_USERNAME') }}"
           password: "{{ lookup('env', 'SN_PASSWORD') }}"
         sys_id: "{{ api_attach_info.json.result[0].sys_id }}"
+        # 强制指定路径
         dest: "{{ local_excel_path }}"
 
-    - name: 5. Parse Data via Python
+    # ！！！关键步骤：在跑 Python 前，确认文件是否存在 ！！！
+    - name: 5. Verify File Existence
+      ansible.builtin.stat:
+        path: "{{ local_excel_path }}"
+      register: file_check
+
+    - name: Fail if file download failed
+      ansible.builtin.fail:
+        msg: "The file was not found at {{ local_excel_path }} even after download task!"
+      when: not file_check.stat.exists
+
+    - name: 6. Parse Excel via Python
       ansible.builtin.shell: |
         python3 << EOF
         import pandas as pd
         import json
         import re
         import os
+
+        target_file = "{{ local_excel_path }}"
+        
         try:
-            df = pd.read_excel("{{ local_excel_path }}", header=None)
+            # 再次确认
+            if not os.path.exists(target_file):
+                raise FileNotFoundError(f"Python cannot see the file at {target_file}")
+
+            df = pd.read_excel(target_file, header=None)
+            
             def extract(key):
+                # 模糊匹配逻辑，增加对特殊字符的容错
                 mask = df.apply(lambda row: row.astype(str).str.contains(key, case=False, na=False).any(), axis=1)
                 if not df[mask].empty:
                     vals = df[mask].iloc[0].dropna().values
                     return str(vals[-1]).strip() if len(vals) > 1 else ""
                 return "N/A"
+
+            keys = [
+                "Server Description", "Application Type", "Platform", "Server Type",
+                "OS Version", "DB Version", "Enable TDE", "HA Protection",
+                "Server Property", "#CPU Cores", "Memory", "App Disk", 
+                "DB Data Disk", "DB Log Disk", "Total Disk Size"
+            ]
             
-            keys = ["Server Description", "Application Type", "Platform", "Server Type", "OS Version", "#CPU Cores", "Memory", "Total Disk Size"]
             full_results = { re.sub(r'[^a-zA-Z0-9]', '_', k).lower().strip('_'): extract(k) for k in keys }
             
             output = {
@@ -88,28 +110,8 @@
         EOF
       register: python_out
 
-    - name: 6. Handover Stats for Executioner B
+    - name: 7. Handover to Workflow
       ansible.builtin.set_stats:
         data:
           provision_data: "{{ python_out.stdout | from_json }}"
           has_work: true
-
-    # --- 递归触发：如果还有剩余工单，则启动下一次轮询 ---
-    - name: 7. RECURSIVE CHECK - Re-trigger myself if queue is not empty
-      ansible.builtin.uri:
-        # 注意：这里调用的是此 Workflow 自身的 Launch API
-        url: "https://{{ lookup('env', 'TOWER_HOST') }}/api/v2/workflow_job_templates/{{ workflow_template_id }}/launch/"
-        method: POST
-        user: "{{ lookup('env', 'SN_USERNAME') }}" # 或者使用专门的 AAP Token
-        password: "{{ lookup('env', 'SN_PASSWORD') }}"
-        force_basic_auth: yes
-        status_code: 201
-        body_format: json
-        validate_certs: false
-      when: incident_result.records | length > 1
-      register: retrigger_out
-
-    - name: Log Recursion Info
-      ansible.builtin.debug:
-        msg: "Retriggered Workflow to handle the next ticket. API Status: {{ retrigger_out.status }}"
-      when: incident_result.records | length > 1
