@@ -1,27 +1,33 @@
 ---
-- name: Sentinel A - Secure File Handling
+- name: Sentinel A - Robust Listener with Recursive Trigger
   hosts: localhost
   gather_facts: false
   collections:
     - servicenow.itsm
 
   vars:
-    # 显式定义工作路径，避开文件名可能的编码问题
+    # --- 基础配置 ---
     local_excel_path: "/tmp/Provision_Request_Form_v1.xlsx"
 
+    # --- 递归配置（请根据你的 Lab 环境手动填写） ---
+    # 这里的数字是你当前这个 Workflow 的 ID (在 AAP 地址栏查看)
+    my_workflow_id: "填入你的数字ID"
+    # 这里的地址是你 AAP 的实际访问地址 (IP 或 域名)
+    aap_host: "填入你的AAP地址"
+
   tasks:
-    - name: 1. Poll for NEW Tickets
+    - name: 1. Poll for NEW VM Provisioning Tickets
       servicenow.itsm.incident_info:
         sysparm_query: "short_descriptionLIKEVM Provision^state=1"
       register: incident_result
 
-    - name: Handle No Work
+    - name: Handle Empty Queue
       ansible.builtin.set_stats:
         data:
           has_work: false
       when: incident_result.records | length == 0
 
-    - name: End play quietly
+    - name: End Play if No Work
       ansible.builtin.meta: end_play
       when: incident_result.records | length == 0
 
@@ -31,7 +37,7 @@
         state: 2 
         other:
           assigned_to: "{{ lookup('env', 'SN_USERNAME') }}"
-          work_notes: "AAP Workflow: Starting extraction process."
+          work_notes: "AAP Workflow: Ticket captured. Remaining in queue: {{ incident_result.records | length - 1 }}"
 
     - name: 3. Get Attachment metadata
       ansible.builtin.uri:
@@ -49,10 +55,8 @@
           username: "{{ lookup('env', 'SN_USERNAME') }}"
           password: "{{ lookup('env', 'SN_PASSWORD') }}"
         sys_id: "{{ api_attach_info.json.result[0].sys_id }}"
-        # 强制指定路径
         dest: "{{ local_excel_path }}"
 
-    # ！！！关键步骤：在跑 Python 前，确认文件是否存在 ！！！
     - name: 5. Verify File Existence
       ansible.builtin.stat:
         path: "{{ local_excel_path }}"
@@ -74,14 +78,12 @@
         target_file = "{{ local_excel_path }}"
         
         try:
-            # 再次确认
             if not os.path.exists(target_file):
                 raise FileNotFoundError(f"Python cannot see the file at {target_file}")
 
             df = pd.read_excel(target_file, header=None)
             
             def extract(key):
-                # 模糊匹配逻辑，增加对特殊字符的容错
                 mask = df.apply(lambda row: row.astype(str).str.contains(key, case=False, na=False).any(), axis=1)
                 if not df[mask].empty:
                     vals = df[mask].iloc[0].dropna().values
@@ -110,8 +112,32 @@
         EOF
       register: python_out
 
-    - name: 7. Handover to Workflow
+    - name: 7. Handover Data to Executioner B
       ansible.builtin.set_stats:
         data:
           provision_data: "{{ python_out.stdout | from_json }}"
           has_work: true
+
+    # --- 递归部分：如果发现有多于1个工单，则触发下一次执行 ---
+    - name: 8. RECURSIVE CHECK - Re-trigger this workflow
+      ansible.builtin.uri:
+        url: "https://{{ aap_host }}/api/v2/workflow_job_templates/{{ my_workflow_id }}/launch/"
+        method: POST
+        user: "{{ lookup('env', 'SN_USERNAME') }}"
+        password: "{{ lookup('env', 'SN_PASSWORD') }}"
+        force_basic_auth: yes
+        status_code: 201
+        body_format: json
+        validate_certs: false
+      when: 
+        - incident_result.records is defined
+        - incident_result.records | length > 1
+      register: retrigger_out
+      ignore_errors: yes
+
+    - name: 9. Recursion Status Trace
+      ansible.builtin.debug:
+        msg: "Detected {{ incident_result.records | length - 1 }} more tickets. Automated re-trigger initiated."
+      when: 
+        - retrigger_out.status is defined 
+        - retrigger_out.status == 201
