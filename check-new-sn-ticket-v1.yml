@@ -1,5 +1,5 @@
 ---
-- name: Sentinel A - Multi-Column Excel Parser
+- name: Sentinel A - Scheduled Single Ticket Parser
   hosts: localhost
   gather_facts: false
   collections:
@@ -7,27 +7,24 @@
 
   vars:
     local_excel_path: "/tmp/Provision_Request_Form.xlsx"
-    # --- 递归配置 ---
-    my_workflow_id: "你的WorkflowID"
-    aap_host: "你的AAP地址"
 
   tasks:
-    - name: 1. Poll for NEW VM Provisioning Tickets
+    - name: 1. Poll for the OLDEST "New" Ticket
       servicenow.itsm.incident_info:
-        sysparm_query: "short_descriptionLIKEVM Provision^state=1"
+        sysparm_query: "short_descriptionLIKEVM Provision^state=1^ORDERBYsys_created_on"
       register: incident_result
 
     - name: End Play if No Work
       ansible.builtin.meta: end_play
       when: incident_result.records | length == 0
 
-    - name: 2. Capture and Move to Active
+    - name: 2. Lock Ticket (Move to Active)
       servicenow.itsm.incident:
         number: "{{ incident_result.records[0].number }}"
         state: 2 
         other:
           assigned_to: "{{ lookup('env', 'SN_USERNAME') }}"
-          work_notes: "AAP Workflow: Parsing Multi-Column Excel Attachment..."
+          work_notes: "AAP Scheduled Run: Processing attachment..."
 
     - name: 3. Get Attachment Metadata
       ansible.builtin.uri:
@@ -59,30 +56,24 @@
             if not os.path.exists(target_file):
                 raise FileNotFoundError(f"File not found at {target_file}")
 
-            # 读取 Excel，不设 header，因为标签在第一列
             df = pd.read_excel(target_file, header=None)
             
             def get_val(label, col_idx):
-                # 在第一列中不区分大小写匹配标签
                 mask = df.iloc[:, 0].astype(str).str.contains(label, case=False, na=False)
                 if mask.any():
                     row_idx = df[mask].index[0]
                     val = df.iloc[row_idx, col_idx]
-                    # 处理空值和 NaN
                     if pd.isna(val) or str(val).lower() == 'nan':
                         return ""
                     return str(val).strip()
                 return ""
 
             vm_queue = []
-            # 从第 2 列（索引 1）开始遍历所有列
             for col_idx in range(1, df.shape[1]):
                 hostname = get_val("HostName", col_idx)
-                # 如果这一列的主机名为空，判定为无效列，跳过
                 if not hostname:
                     continue
                 
-                # 构造单台 VM 的 Specs
                 vm_specs = {
                     "name": hostname,
                     "ip": get_val("IP address", col_idx),
@@ -91,8 +82,6 @@
                     "portgroup": get_val("Port Group Name", col_idx),
                     "os_disk": get_val("OS Disk", col_idx),
                     "app_disk": get_val("App Disk", col_idx),
-                    "db_data_disk": get_val("DB Data Disk", col_idx),
-                    "db_log_disk": get_val("DB Log Disk", col_idx),
                     "cluster": get_val("vSphere Cluster", col_idx)
                 }
                 vm_queue.append(vm_specs)
@@ -111,8 +100,13 @@
         EOF
       register: python_out
 
-    - name: 6. Handover Data to Workflow
+    - name: 6. Handover Data and Cleanup
       ansible.builtin.set_stats:
         data:
           provision_data: "{{ python_out.stdout | from_json }}"
           has_work: "{{ (python_out.stdout | from_json).has_work }}"
+      
+    - name: 7. Cleanup Local Temp File
+      ansible.builtin.file:
+        path: "{{ local_excel_path }}"
+        state: absents
