@@ -1,33 +1,31 @@
 ---
-- name: Executioner B - Bulk Display and Verification
+- name: Executioner B - Batch Display
   hosts: localhost
   gather_facts: false
 
   tasks:
-    - name: Check data availability
+    - name: End if no work
       ansible.builtin.meta: end_play
       when: not (has_work | default(false) | bool)
 
-    - name: Display Ticket Header
+    - name: Display Dashboard Header
       ansible.builtin.debug:
         msg: 
           - "=========================================="
-          - "PROCESSING TICKET: {{ provision_data.ticket_context.number }}"
-          - "TOTAL VMS DETECTED: {{ provision_data.vm_list | length }}"
+          - "  PROVISIONING JOB FOR TICKET: {{ provision_data.ticket_context.number }}"
+          - "  VMS TO BE CREATED: {{ provision_data.vm_list | length }}"
           - "=========================================="
 
-    - name: Summary of Batch Request
+    - name: Display Each VM Specifications
       ansible.builtin.debug:
-        msg: >
-          VM: {{ item.name }} 
-          | IP: {{ item.ip }} 
-          | CPU: {{ item.cpu }} 
-          | RAM: {{ item.ram }}GB 
-          | PG: {{ item.portgroup }}
+        msg: 
+          - "------------------------------------------"
+          - "VM NAME    : {{ item.name }}"
+          - "IP ADDRESS : {{ item.ip }}"
+          - "CPU CORES  : {{ item.cpu }}"
+          - "RAM (GB)   : {{ item.ram }}"
+          - "PORT GROUP : {{ item.portgroup }}"
+          - "CLUSTER    : {{ item.cluster }}"
+          - "OS DISK    : {{ item.os_disk }} GB"
+          - "APP DISK   : {{ item.app_disk | default('N/A') }} GB"
       loop: "{{ provision_data.vm_list }}"
-
-    - name: Specific Disk Analysis
-      ansible.builtin.debug:
-        msg: "VM {{ item.name }} requires OS: {{ item.os_disk }}GB, App: {{ item.app_disk | default('None') }}GB"
-      loop: "{{ provision_data.vm_list }}"
-      when: item.app_disk != ""
