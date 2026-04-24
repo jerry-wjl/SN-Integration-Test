@@ -1,0 +1,118 @@
+---
+- name: Sentinel A - Multi-Column Excel Parser
+  hosts: localhost
+  gather_facts: false
+  collections:
+    - servicenow.itsm
+
+  vars:
+    local_excel_path: "/tmp/Provision_Request_Form.xlsx"
+    # --- 递归配置 ---
+    my_workflow_id: "你的WorkflowID"
+    aap_host: "你的AAP地址"
+
+  tasks:
+    - name: 1. Poll for NEW VM Provisioning Tickets
+      servicenow.itsm.incident_info:
+        sysparm_query: "short_descriptionLIKEVM Provision^state=1"
+      register: incident_result
+
+    - name: End Play if No Work
+      ansible.builtin.meta: end_play
+      when: incident_result.records | length == 0
+
+    - name: 2. Capture and Move to Active
+      servicenow.itsm.incident:
+        number: "{{ incident_result.records[0].number }}"
+        state: 2 
+        other:
+          assigned_to: "{{ lookup('env', 'SN_USERNAME') }}"
+          work_notes: "AAP Workflow: Parsing Multi-Column Excel Attachment..."
+
+    - name: 3. Get Attachment Metadata
+      ansible.builtin.uri:
+        url: "{{ lookup('env', 'SN_HOST') }}/api/now/table/sys_attachment?sysparm_query=table_sys_id={{ incident_result.records[0].sys_id }}"
+        method: GET
+        user: "{{ lookup('env', 'SN_USERNAME') }}"
+        password: "{{ lookup('env', 'SN_PASSWORD') }}"
+        force_basic_auth: yes
+      register: api_attach_info
+
+    - name: 4. Download Excel Attachment
+      servicenow.itsm.attachment_info:
+        instance:
+          host: "{{ lookup('env', 'SN_HOST') }}"
+          username: "{{ lookup('env', 'SN_USERNAME') }}"
+          password: "{{ lookup('env', 'SN_PASSWORD') }}"
+        sys_id: "{{ api_attach_info.json.result[0].sys_id }}"
+        dest: "{{ local_excel_path }}"
+
+    - name: 5. Parse Multi-Column Excel via Python
+      ansible.builtin.shell: |
+        python3 << EOF
+        import pandas as pd
+        import json
+        import os
+
+        target_file = "{{ local_excel_path }}"
+        try:
+            if not os.path.exists(target_file):
+                raise FileNotFoundError(f"File not found at {target_file}")
+
+            # 读取 Excel，不设 header，因为标签在第一列
+            df = pd.read_excel(target_file, header=None)
+            
+            def get_val(label, col_idx):
+                # 在第一列中不区分大小写匹配标签
+                mask = df.iloc[:, 0].astype(str).str.contains(label, case=False, na=False)
+                if mask.any():
+                    row_idx = df[mask].index[0]
+                    val = df.iloc[row_idx, col_idx]
+                    # 处理空值和 NaN
+                    if pd.isna(val) or str(val).lower() == 'nan':
+                        return ""
+                    return str(val).strip()
+                return ""
+
+            vm_queue = []
+            # 从第 2 列（索引 1）开始遍历所有列
+            for col_idx in range(1, df.shape[1]):
+                hostname = get_val("HostName", col_idx)
+                # 如果这一列的主机名为空，判定为无效列，跳过
+                if not hostname:
+                    continue
+                
+                # 构造单台 VM 的 Specs
+                vm_specs = {
+                    "name": hostname,
+                    "ip": get_val("IP address", col_idx),
+                    "cpu": get_val("#CPU Cores", col_idx),
+                    "ram": get_val("Memory", col_idx),
+                    "portgroup": get_val("Port Group Name", col_idx),
+                    "os_disk": get_val("OS Disk", col_idx),
+                    "app_disk": get_val("App Disk", col_idx),
+                    "db_data_disk": get_val("DB Data Disk", col_idx),
+                    "db_log_disk": get_val("DB Log Disk", col_idx),
+                    "cluster": get_val("vSphere Cluster", col_idx)
+                }
+                vm_queue.append(vm_specs)
+
+            output = {
+                "ticket_context": {
+                    "number": "{{ incident_result.records[0].number }}",
+                    "sys_id": "{{ incident_result.records[0].sys_id }}"
+                },
+                "vm_list": vm_queue,
+                "has_work": True if len(vm_queue) > 0 else False
+            }
+            print(json.dumps(output))
+        except Exception as e:
+            print(json.dumps({"error": str(e), "has_work": False}))
+        EOF
+      register: python_out
+
+    - name: 6. Handover Data to Workflow
+      ansible.builtin.set_stats:
+        data:
+          provision_data: "{{ python_out.stdout | from_json }}"
+          has_work: "{{ (python_out.stdout | from_json).has_work }}"
