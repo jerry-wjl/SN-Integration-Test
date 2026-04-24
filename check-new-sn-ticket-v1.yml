@@ -109,4 +109,4 @@
     - name: 7. Cleanup Local Temp File
       ansible.builtin.file:
         path: "{{ local_excel_path }}"
-        state: absents
+        state: absent
