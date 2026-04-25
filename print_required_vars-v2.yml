@@ -1,17 +1,16 @@
 ---
-- name: Executioner B - Structured Variable Formatter
+- name: Executioner B - Structured Variable Formatter & Verification
   hosts: localhost
   gather_facts: false
 
   tasks:
-    - name: 1. End if no work
+    - name: 1. Stop if no work to process
       ansible.builtin.meta: end_play
       when: not (has_work | default(false) | bool)
 
-    - name: 2. Re-structure vm_list to match standard format
+    - name: 2. Re-structure vm_list to match poc_config format
       ansible.builtin.set_fact:
-        # 将 Excel 原始数据映射到你的 poc_config 字段名
-        # 同时完成 GB -> MB 的转换，补齐子网掩码、网关和 DNS
+        # 动态映射：从 Excel 解析的内容填入 vm_list 结构
         final_vm_list: >-
           {% set vms = [] %}
           {% for item in provision_data.vm_list %}
@@ -23,28 +22,20 @@
                  'dns': ["192.168.22.70", "8.8.8.8"],
                  'cpu': item.cpu | int,
                  'ram': (item.ram | int) * 1024,
-                 'portgroup': item.portgroup
+                 'portgroup': item.portgroup,
+                 'os_disk': item.os_disk | int,
+                 'app_disk': item.app_disk | default('')
                }) 
           %}
           {% endfor %}
           {{ vms }}
 
-    - name: 3. Visual Dashboard - Validation Output
-      ansible.builtin.debug:
-        msg: 
-          - "=========================================="
-          - "  PROVISIONING JOB: {{ provision_data.ticket_context.number }}"
-          - "  RECONSTRUCTING VM_LIST FOR EXECUTION..."
-          - "=========================================="
-          - "{{ {'vm_list': final_vm_list} | to_nice_yaml(indent=2) }}"
-
-    - name: 4. Generate Combined poc_config.yml
-      # 我们将静态的前三部分和动态的第四部分拼接
+    - name: 3. Create the New poc_config.yml in /tmp
       ansible.builtin.copy:
         dest: "/tmp/poc_config.yml"
         content: |
           ---
-          # 1. 基础架构连接信息 (用于 Ansible 访问 vCenter)
+          # 1. 基础架构连接信息
           infra_config:
             vcenter_dc: "SDDC-Datacenter"
             vcenter_cluster: "Cluster-1"
@@ -69,11 +60,26 @@
             admin_user: "administrator@example.org"
             admin_password: "Redhat!234"
 
-          # 4. 待部署虚机列表 (由 Executioner B 动态生成)
+          # 4. 待部署虚机列表 (由 ServiceNow 附件动态生成)
           vm_list:
           {{ final_vm_list | to_nice_yaml(indent=2) | indent(2, False) }}
 
-    - name: 5. Handover the new config path
+    - name: 4. Handover config path to Workflow
       ansible.builtin.set_stats:
         data:
           runtime_config_file: "/tmp/poc_config.yml"
+
+    - name: 5. Display Generated File Content (For Verification)
+      # 使用 slurp 读取文件，因为它能处理 base64 编码，防止特殊字符导致 debug 中断
+      ansible.builtin.slurp:
+        src: "/tmp/poc_config.yml"
+      register: slurped_config
+
+    - name: 6. Show the Final YAML Configuration
+      ansible.builtin.debug:
+        msg: 
+          - "----------------------------------------------------------"
+          - "   CONTENT OF GENERATED /tmp/poc_config.yml"
+          - "----------------------------------------------------------"
+          - "{{ slurped_config.content | b64decode }}"
+          - "----------------------------------------------------------"
