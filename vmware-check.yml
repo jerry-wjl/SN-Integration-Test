@@ -1,0 +1,21 @@
+---
+- name: "Diagnostic - vCenter Credential Test"
+  hosts: localhost
+  gather_facts: false
+  collections:
+    - community.vmware
+
+  tasks:
+    - name: "Test 1: Retrieve Datacenter Information"
+      community.vmware.vmware_datacenter_info:
+        hostname: "{{ lookup('env', 'VMWARE_HOST') }}"
+        username: "{{ lookup('env', 'VMWARE_USER') }}"
+        password: "{{ lookup('env', 'VMWARE_PASSWORD') }}"
+        validate_certs: false
+      register: vmware_test
+
+    - name: "Diagnostic Result"
+      ansible.builtin.debug:
+        msg: 
+          - "vCenter Connection: SUCCESS"
+          - "Detected Datacenters: {{ vmware_test.datacenter_info | map(attribute='name') | list }}"
