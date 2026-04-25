@@ -1,19 +1,14 @@
 ---
-- name: Executioner B - Solid YAML Formatter
+- name: Executioner B - Template Power Version
   hosts: localhost
   gather_facts: false
-
-  vars:
-    # 使用相对路径，AAP 会在 bubblewrap 隔离区的当前工作目录创建它
-    # 这绝对有写权限，且不会干扰 Git 仓库或物理机 /tmp
-    output_file: "generated_poc_config.yml"
 
   tasks:
     - name: 1. Stop if no work
       ansible.builtin.meta: end_play
       when: not (has_work | default(false) | bool)
 
-    - name: 2. Re-structure VM list
+    - name: 2. Prepare Data for Template
       ansible.builtin.set_fact:
         final_vm_list: >-
           {% set vms = [] %}
@@ -34,51 +29,22 @@
           {% endfor %}
           {{ vms }}
 
-    - name: 3. Create YAML file using standard blocks
-      # 注意：这次我们彻底放弃 set_fact 预转义，直接在 copy 里用 template 语法
-      ansible.builtin.copy:
-        dest: "{{ output_file }}"
-        content: |
-          ---
-          # 1. 基础架构连接信息
-          infra_config:
-            vcenter_dc: "SDDC-Datacenter"
-            vcenter_cluster: "Cluster-1"
-            vcenter_ds: "workload_share_yBaQN"
-            vm_folder: "/Workloads/sandbox-n7bs6"
-            vm_template: "W2K19-VM-Template"
-            vm_network: "segment-sandbox-n7bs6"
+    - name: 3. Render YAML using J2 Template
+      # src 指向 Git 里的模板，dest 指向当前 Job 的临时工作目录
+      ansible.builtin.template:
+        src: poc_config.j2
+        dest: "./runtime_poc_config.yml"
 
-          # 2. Windows 运维连接参数
-          win_connection_vars:
-            ansible_connection: "winrm"
-            ansible_port: 5985
-            ansible_winrm_transport: "ntlm"
-            ansible_winrm_server_cert_validation: "ignore"
-            ansible_user: "administrator"
-            ansible_password: "Redhat!234"
-
-          # 3. Active Directory 域信息
-          ad_domain:
-            name: "example.org"
-            dns_server: "192.168.22.70"
-            admin_user: "administrator@example.org"
-            admin_password: "Redhat!234"
-
-          # 4. 待部署虚机列表
-          vm_list:
-          {{ final_vm_list | to_nice_yaml(indent=2) | indent(2, first=True) }}
-
-    - name: 4. Export full path for next job
+    - name: 4. Export the Real Path
       ansible.builtin.set_stats:
         data:
-          # 使用 realpath 获取隔离区内的全路径，确保 B1 能找到
-          runtime_config_file: "{{ lookup('env', 'PWD') }}/{{ output_file }}"
+          # 获取这个临时文件的绝对路径，传给后续 B1 任务
+          runtime_config_file: "{{ lookup('env', 'PWD') }}/runtime_poc_config.yml"
 
-    - name: 5. Verify Content (The only way to be sure)
-      ansible.builtin.shell: "cat {{ output_file }}"
-      register: cat_out
+    - name: 5. Final Verification (The "No-Liar" Test)
+      ansible.builtin.shell: "cat ./runtime_poc_config.yml"
+      register: final_config_text
 
-    - name: 6. Final Dashboard Output
+    - name: 6. Show the Clean Output
       ansible.builtin.debug:
-        msg: "{{ cat_out.stdout_lines }}"
+        msg: "{{ final_config_text.stdout_lines }}"
