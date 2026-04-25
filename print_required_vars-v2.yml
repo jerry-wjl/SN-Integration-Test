@@ -10,7 +10,6 @@
 
     - name: 2. Re-structure vm_list to match poc_config format
       ansible.builtin.set_fact:
-        # 动态映射：从 Excel 解析的内容填入 vm_list 结构
         final_vm_list: >-
           {% set vms = [] %}
           {% for item in provision_data.vm_list %}
@@ -33,6 +32,7 @@
     - name: 3. Create the New poc_config.yml in /tmp
       ansible.builtin.copy:
         dest: "/tmp/poc_config.yml"
+        # 核心改动：利用 to_nice_yaml 强制转换整个列表
         content: |
           ---
           # 1. 基础架构连接信息
@@ -60,7 +60,7 @@
             admin_user: "administrator@example.org"
             admin_password: "Redhat!234"
 
-          # 4. 待部署虚机列表 (由 ServiceNow 附件动态生成)
+          # 4. 待部署虚机列表
           vm_list:
           {{ final_vm_list | to_nice_yaml(indent=2) | indent(2, False) }}
 
@@ -69,8 +69,7 @@
         data:
           runtime_config_file: "/tmp/poc_config.yml"
 
-    - name: 5. Display Generated File Content (For Verification)
-      # 使用 slurp 读取文件，因为它能处理 base64 编码，防止特殊字符导致 debug 中断
+    - name: 5. Display Generated File Content
       ansible.builtin.slurp:
         src: "/tmp/poc_config.yml"
       register: slurped_config
