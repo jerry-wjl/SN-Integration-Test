@@ -6,9 +6,9 @@
     - servicenow.itsm
 
   tasks:
-    - name: "Test 1: Get Current User Info (API Connection)"
-      # 即使不传参数，这个模块也会尝试用环境中的 Credential 建立连接
-      servicenow.itsm.now_info:
+    - name: "Test 1: Query User Table (API Connection Check)"
+      # table_info 是最通用的查询模块
+      servicenow.itsm.table_info:
         table: sys_user
         sysparm_query: "user_name={{ lookup('env', 'SN_USERNAME') }}"
       register: sn_auth_test
@@ -18,5 +18,4 @@
         msg: 
           - "ServiceNow Connection: SUCCESS"
           - "Connected to Instance: {{ lookup('env', 'SN_HOST') }}"
-          - "Found User Record: {{ sn_auth_test.records[0].name | default('Unknown') }}"
-      when: sn_auth_test.records is defined
+          - "Found Record for User [{{ lookup('env', 'SN_USERNAME') }}]: {{ 'YES' if sn_auth_test.records | length > 0 else 'NO' }}"
