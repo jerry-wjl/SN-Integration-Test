@@ -1,5 +1,5 @@
 ---
-- name: Executioner B - Direct Template Version
+- name: Executioner B - Full Context Formatter
   hosts: localhost
   gather_facts: false
 
@@ -8,21 +8,32 @@
       ansible.builtin.meta: end_play
       when: not (has_work | default(false) | bool)
 
-    - name: 2. Render YAML directly from raw data
-      # 此时模板会直接访问 Sentinel A 传过来的 provision_data
+    - name: 2. Render Full Configuration (with Ticket Info)
       ansible.builtin.template:
         src: poc_config.j2
         dest: "./runtime_poc_config.yml"
 
-    - name: 3. Export the path
+    - name: 3. Export Path for Next Jobs
       ansible.builtin.set_stats:
         data:
           runtime_config_file: "{{ lookup('env', 'PWD') }}/runtime_poc_config.yml"
 
-    - name: 4. Final Text Verification
+    - name: 4. Visual Dashboard (Console Output)
+      # 这一步是专门给你看的，确保信息对齐
+      ansible.builtin.debug:
+        msg: 
+          - "=========================================================="
+          - "  PROVISIONING DASHBOARD"
+          - "=========================================================="
+          - "  TICKET NUMBER : {{ provision_data.ticket_context.number }}"
+          - "  VMS TO CREATE : {{ provision_data.vm_list | length }}"
+          - "  CONFIG FILE   : ./runtime_poc_config.yml"
+          - "=========================================================="
+
+    - name: 5. Verify YAML File Content
       ansible.builtin.command: "cat ./runtime_poc_config.yml"
       register: final_config_text
 
-    - name: 5. Show Output
+    - name: 6. Display File (Final Check)
       ansible.builtin.debug:
-        msg: "{{ final_config_text.stdout_lines }}"
+        var: final_config_text.stdout_lines
