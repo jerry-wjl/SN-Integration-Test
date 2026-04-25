@@ -1,5 +1,5 @@
 ---
-- name: Executioner B - Template Power Version
+- name: Executioner B - Direct Template Version
   hosts: localhost
   gather_facts: false
 
@@ -8,43 +8,21 @@
       ansible.builtin.meta: end_play
       when: not (has_work | default(false) | bool)
 
-    - name: 2. Prepare Data for Template
-      ansible.builtin.set_fact:
-        final_vm_list: >-
-          {% set vms = [] %}
-          {% for item in provision_data.vm_list %}
-          {%   set _ = vms.append({
-                 'name': item.name,
-                 'ip': item.ip,
-                 'mask': '255.255.255.0',
-                 'gw': '192.168.22.1',
-                 'dns': ["192.168.22.70", "8.8.8.8"],
-                 'cpu': item.cpu | int,
-                 'ram': (item.ram | int) * 1024,
-                 'portgroup': item.portgroup,
-                 'os_disk': item.os_disk | int,
-                 'app_disk': item.app_disk | default('')
-               }) 
-          %}
-          {% endfor %}
-          {{ vms }}
-
-    - name: 3. Render YAML using J2 Template
-      # src 指向 Git 里的模板，dest 指向当前 Job 的临时工作目录
+    - name: 2. Render YAML directly from raw data
+      # 此时模板会直接访问 Sentinel A 传过来的 provision_data
       ansible.builtin.template:
         src: poc_config.j2
         dest: "./runtime_poc_config.yml"
 
-    - name: 4. Export the Real Path
+    - name: 3. Export the path
       ansible.builtin.set_stats:
         data:
-          # 获取这个临时文件的绝对路径，传给后续 B1 任务
           runtime_config_file: "{{ lookup('env', 'PWD') }}/runtime_poc_config.yml"
 
-    - name: 5. Final Verification (The "No-Liar" Test)
-      ansible.builtin.shell: "cat ./runtime_poc_config.yml"
+    - name: 4. Final Text Verification
+      ansible.builtin.command: "cat ./runtime_poc_config.yml"
       register: final_config_text
 
-    - name: 6. Show the Clean Output
+    - name: 5. Show Output
       ansible.builtin.debug:
         msg: "{{ final_config_text.stdout_lines }}"
