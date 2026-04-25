@@ -1,4 +1,11 @@
 ---
+# 0. 工单上下文信息 (用于后续任务回贴工单状态)
+ticket_info:
+  number: "{{ provision_data.ticket_context.number }}"
+  sys_id: "{{ provision_data.ticket_context.sys_id }}"
+  vm_count: {{ provision_data.vm_list | length }}
+  processed_at: "{{ lookup('pipe', 'date \"+%Y-%m-%d %H:%M:%S\"') }}"
+
 # 1. 基础架构连接信息
 infra_config:
   vcenter_dc: "SDDC-Datacenter"
