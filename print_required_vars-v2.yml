@@ -1,17 +1,16 @@
 ---
-- name: Executioner B - Final Fix for YAML Formatting
+- name: Executioner B - Template Based Formatter
   hosts: localhost
   gather_facts: false
 
   tasks:
-    - name: 1. End if no work to process
+    - name: 1. Stop if no work
       ansible.builtin.meta: end_play
       when: not (has_work | default(false) | bool)
 
-    - name: 2. Build final list and Pre-render full YAML content
+    - name: 2. Create standard list in memory
       ansible.builtin.set_fact:
-        # 先构建列表
-        temp_list: >-
+        final_vm_list: >-
           {% set vms = [] %}
           {% for item in provision_data.vm_list %}
           {%   set _ = vms.append({
@@ -30,53 +29,21 @@
           {% endfor %}
           {{ vms }}
 
-    - name: 3. Assemble full file content as a single String
-      ansible.builtin.set_fact:
-        full_yaml_content: |
-          ---
-          # 1. 基础架构连接信息
-          infra_config:
-            vcenter_dc: "SDDC-Datacenter"
-            vcenter_cluster: "Cluster-1"
-            vcenter_ds: "workload_share_yBaQN"
-            vm_folder: "/Workloads/sandbox-n7bs6"
-            vm_template: "W2K19-VM-Template"
-            vm_network: "segment-sandbox-n7bs6"
+    - name: 3. Render Final Config via Template
+      # template 模块是处理 YAML 格式化最专业、最不会出错的方式
+      ansible.builtin.template:
+        src: poc_config.j2
+        dest: "{{ playbook_dir }}/generated_poc_config.yml"
 
-          # 2. Windows 运维连接参数
-          win_connection_vars:
-            ansible_connection: "winrm"
-            ansible_port: 5985
-            ansible_winrm_transport: "ntlm"
-            ansible_winrm_server_cert_validation: "ignore"
-            ansible_user: "administrator"
-            ansible_password: "Redhat!234"
-
-          # 3. Active Directory 域信息
-          ad_domain:
-            name: "example.org"
-            dns_server: "192.168.22.70"
-            admin_user: "administrator@example.org"
-            admin_password: "Redhat!234"
-
-          # 4. 待部署虚机列表
-          vm_list:
-          {{ temp_list | to_nice_yaml(indent=2) | indent(2, True) }}
-
-    - name: 4. Write pure string to file
-      ansible.builtin.copy:
-        dest: "/tmp/poc_config.yml"
-        content: "{{ full_yaml_content }}"
-
-    - name: 5. Handover config path
+    - name: 4. Export the file path for B1
       ansible.builtin.set_stats:
         data:
-          runtime_config_file: "/tmp/poc_config.yml"
+          runtime_config_file: "{{ playbook_dir }}/generated_poc_config.yml"
 
-    - name: 6. Verify Content (The absolute final test)
-      ansible.builtin.shell: "cat /tmp/poc_config.yml"
-      register: final_cat
+    - name: 5. Final Verification (Pure Text)
+      ansible.builtin.command: "cat {{ playbook_dir }}/generated_poc_config.yml"
+      register: final_config_text
 
-    - name: 7. Show the result
+    - name: 6. Show it
       ansible.builtin.debug:
-        msg: "{{ final_cat.stdout_lines }}"
+        var: final_config_text.stdout_lines
