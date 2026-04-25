@@ -1,0 +1,40 @@
+---
+# 1. 基础架构连接信息
+infra_config:
+  vcenter_dc: "SDDC-Datacenter"
+  vcenter_cluster: "Cluster-1"
+  vcenter_ds: "workload_share_yBaQN"
+  vm_folder: "/Workloads/sandbox-n7bs6"
+  vm_template: "W2K19-VM-Template"
+  vm_network: "segment-sandbox-n7bs6"
+
+# 2. Windows 运维连接参数
+win_connection_vars:
+  ansible_connection: "winrm"
+  ansible_port: 5985
+  ansible_winrm_transport: "ntlm"
+  ansible_winrm_server_cert_validation: "ignore"
+  ansible_user: "administrator"
+  ansible_password: "Redhat!234"
+
+# 3. Active Directory 域信息
+ad_domain:
+  name: "example.org"
+  dns_server: "192.168.22.70"
+  admin_user: "administrator@example.org"
+  admin_password: "Redhat!234"
+
+# 4. 待部署虚机列表
+vm_list:
+{% for vm in final_vm_list %}
+  - name: "{{ vm.name }}"
+    ip: "{{ vm.ip }}"
+    mask: "{{ vm.mask }}"
+    gw: "{{ vm.gw }}"
+    dns: {{ vm.dns | to_json }}
+    cpu: {{ vm.cpu }}
+    ram: {{ vm.ram }}
+    portgroup: "{{ vm.portgroup }}"
+    os_disk: {{ vm.os_disk }}
+    app_disk: "{{ vm.app_disk }}"
+{% endfor %}
