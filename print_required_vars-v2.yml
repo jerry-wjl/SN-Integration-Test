@@ -1,0 +1,79 @@
+---
+- name: Executioner B - Structured Variable Formatter
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: 1. End if no work
+      ansible.builtin.meta: end_play
+      when: not (has_work | default(false) | bool)
+
+    - name: 2. Re-structure vm_list to match standard format
+      ansible.builtin.set_fact:
+        # 将 Excel 原始数据映射到你的 poc_config 字段名
+        # 同时完成 GB -> MB 的转换，补齐子网掩码、网关和 DNS
+        final_vm_list: >-
+          {% set vms = [] %}
+          {% for item in provision_data.vm_list %}
+          {%   set _ = vms.append({
+                 'name': item.name,
+                 'ip': item.ip,
+                 'mask': '255.255.255.0',
+                 'gw': '192.168.22.1',
+                 'dns': ["192.168.22.70", "8.8.8.8"],
+                 'cpu': item.cpu | int,
+                 'ram': (item.ram | int) * 1024,
+                 'portgroup': item.portgroup
+               }) 
+          %}
+          {% endfor %}
+          {{ vms }}
+
+    - name: 3. Visual Dashboard - Validation Output
+      ansible.builtin.debug:
+        msg: 
+          - "=========================================="
+          - "  PROVISIONING JOB: {{ provision_data.ticket_context.number }}"
+          - "  RECONSTRUCTING VM_LIST FOR EXECUTION..."
+          - "=========================================="
+          - "{{ {'vm_list': final_vm_list} | to_nice_yaml(indent=2) }}"
+
+    - name: 4. Generate Combined poc_config.yml
+      # 我们将静态的前三部分和动态的第四部分拼接
+      ansible.builtin.copy:
+        dest: "/tmp/poc_config.yml"
+        content: |
+          ---
+          # 1. 基础架构连接信息 (用于 Ansible 访问 vCenter)
+          infra_config:
+            vcenter_dc: "SDDC-Datacenter"
+            vcenter_cluster: "Cluster-1"
+            vcenter_ds: "workload_share_yBaQN"
+            vm_folder: "/Workloads/sandbox-n7bs6"
+            vm_template: "W2K19-VM-Template"
+            vm_network: "segment-sandbox-n7bs6"
+
+          # 2. Windows 运维连接参数
+          win_connection_vars:
+            ansible_connection: "winrm"
+            ansible_port: 5985
+            ansible_winrm_transport: "ntlm"
+            ansible_winrm_server_cert_validation: "ignore"
+            ansible_user: "administrator"
+            ansible_password: "Redhat!234"
+
+          # 3. Active Directory 域信息
+          ad_domain:
+            name: "example.org"
+            dns_server: "192.168.22.70"
+            admin_user: "administrator@example.org"
+            admin_password: "Redhat!234"
+
+          # 4. 待部署虚机列表 (由 Executioner B 动态生成)
+          vm_list:
+          {{ final_vm_list | to_nice_yaml(indent=2) | indent(2, False) }}
+
+    - name: 5. Handover the new config path
+      ansible.builtin.set_stats:
+        data:
+          runtime_config_file: "/tmp/poc_config.yml"
