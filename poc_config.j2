@@ -26,15 +26,15 @@ ad_domain:
 
 # 4. 待部署虚机列表
 vm_list:
-{% for vm in final_vm_list %}
-  - name: "{{ vm.name }}"
-    ip: "{{ vm.ip }}"
-    mask: "{{ vm.mask }}"
-    gw: "{{ vm.gw }}"
-    dns: {{ vm.dns | to_json }}
-    cpu: {{ vm.cpu }}
-    ram: {{ vm.ram }}
-    portgroup: "{{ vm.portgroup }}"
-    os_disk: {{ vm.os_disk }}
-    app_disk: "{{ vm.app_disk }}"
+{% for item in provision_data.vm_list %}
+  - name: "{{ item.name }}"
+    ip: "{{ item.ip }}"
+    mask: "255.255.255.0"
+    gw: "192.168.22.1"
+    dns: ["192.168.22.70", "8.8.8.8"]
+    cpu: {{ item.cpu | int }}
+    ram: {{ (item.ram | int) * 1024 }}
+    portgroup: "{{ item.portgroup }}"
+    os_disk: {{ item.os_disk | int }}
+    app_disk: "{{ item.app_disk | default('') }}"
 {% endfor %}
