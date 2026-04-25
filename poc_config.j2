@@ -33,7 +33,7 @@ vm_list:
     gw: "192.168.22.1"
     dns: ["192.168.22.70", "8.8.8.8"]
     cpu: {{ item.cpu | int }}
-    ram: {{ (item.ram | int) * 1024 }}
+    ram: {{ item.ram | int }}
     portgroup: "{{ item.portgroup }}"
     os_disk: {{ item.os_disk | int }}
     app_disk: "{{ item.app_disk | default('') }}"
