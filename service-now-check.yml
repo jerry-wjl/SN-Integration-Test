@@ -6,10 +6,10 @@
     - servicenow.itsm
 
   tasks:
-    - name: "Test 1: Query User Table (API Connection Check)"
-      # table_info 是最通用的查询模块
-      servicenow.itsm.table_info:
-        table: sys_user
+    - name: "Test 1: Simple API GET Request (Connection Check)"
+      # api_info 是这个集合里进行通用查询的最基础模块
+      servicenow.itsm.api_info:
+        resource: "sys_user"
         sysparm_query: "user_name={{ lookup('env', 'SN_USERNAME') }}"
       register: sn_auth_test
 
@@ -18,4 +18,4 @@
         msg: 
           - "ServiceNow Connection: SUCCESS"
           - "Connected to Instance: {{ lookup('env', 'SN_HOST') }}"
-          - "Found Record for User [{{ lookup('env', 'SN_USERNAME') }}]: {{ 'YES' if sn_auth_test.records | length > 0 else 'NO' }}"
+          - "Found User Record: {{ 'YES' if sn_auth_test.result | length > 0 else 'NO' }}"
