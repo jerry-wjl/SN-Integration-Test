@@ -1,0 +1,18 @@
+---
+- name: B1 - Windows Batch Provisioning (Enhanced Version)
+  hosts: localhost
+  gather_facts: false
+  collections:
+    - community.vmware
+
+  tasks:
+    - name: 1. Load All POC Configurations
+      ansible.builtin.include_vars:
+        file: "./poc_config.yml"
+
+    - name: 2. Execute Batch Deployment
+      ansible.builtin.include_tasks: win_vm_provision_single.yml
+      loop: "{{ vm_list }}"
+      loop_control:
+        loop_var: vm_item
+      when: vm_list | length > 0
