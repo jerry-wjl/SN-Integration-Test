@@ -1,0 +1,11 @@
+---
+- name: "Event Stream Debugger"
+  hosts: all
+  sources:
+    - ansible.eda.webhook:
+        port: 5000 
+  rules:
+    - name: "Log full event payload"
+      condition: true  
+      action:
+        debug:
