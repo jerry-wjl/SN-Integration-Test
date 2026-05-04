@@ -1,0 +1,63 @@
+---
+# --------------------------------------------------------------
+# Play 1: 从配置文件中提取 IP 并注册到内存
+# --------------------------------------------------------------
+- name: "B2.1 - Prepare Inventory from Config File"
+  hosts: localhost
+  gather_facts: no
+  vars_files:
+    - poc_config.yml
+  tasks:
+    - name: "Dynamically build inventory from vm_list"
+      ansible.builtin.add_host:
+        name: "{{ item.ip }}"
+        groups: "new_windows_hosts"
+        ansible_host: "{{ item.ip }}"
+        ansible_connection: "winrm"
+        ansible_port: "{{ win_connection_vars.ansible_port }}"
+        ansible_winrm_transport: "{{ win_connection_vars.ansible_winrm_transport }}"
+        ansible_winrm_server_cert_validation: "{{ win_connection_vars.ansible_winrm_server_cert_validation }}"
+        ansible_user: "{{ win_connection_vars.ansible_user }}"
+        ansible_password: "{{ win_connection_vars.ansible_password }}"
+      loop: "{{ vm_list }}"
+
+# --------------------------------------------------------------
+# Play 2: 正式执行加域任务
+# --------------------------------------------------------------
+- name: "B2.2 - Windows Active Directory Domain Join"
+  hosts: new_windows_hosts
+  gather_facts: no
+  become: no
+  vars_files:
+    - poc_config.yml
+  vars:
+    domain_name: "{{ ad_domain.name }}"
+    domain_admin: "{{ ad_domain.admin_user }}"
+    domain_password: "{{ ad_domain.admin_password }}"
+
+  tasks:
+    - name: "Check Connectivity and Auth"
+      ansible.windows.win_ping:
+
+    - name: "Join Windows Domain"
+      microsoft.ad.membership:
+        dns_domain_name: "{{ domain_name }}"
+        domain_admin_user: "{{ domain_admin }}"
+        domain_admin_password: "{{ domain_password }}"
+        state: domain
+      register: domain_join_results
+
+    - name: "Reboot after Domain Join"
+      ansible.windows.win_reboot:
+        msg: "Rebooting to finalize domain join"
+        pre_reboot_delay: 5
+      when: domain_join_results.reboot_required
+
+    - name: "Verify Domain Membership"
+      ansible.windows.win_shell: |
+        (Get-WmiObject -Class Win32_ComputerSystem).PartOfDomain
+      register: domain_check
+
+    - name: "Final Output"
+      ansible.builtin.debug:
+        msg: "VM {{ inventory_hostname }} is now part of {{ domain_name }}: {{ domain_check.stdout }}"
