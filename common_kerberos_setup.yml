@@ -1,0 +1,36 @@
+---
+# 该文件用于初始化 EE 容器内的 Kerberos 环境
+# 建议在 Playbook 的第一个 Play 中对 localhost 执行
+
+- name: "Ensure /etc/krb5.conf exists and is configured"
+  ansible.builtin.copy:
+    dest: /etc/krb5.conf
+    content: |
+      [libdefaults]
+          default_realm = EXAMPLE.ORG
+          dns_lookup_realm = false
+          dns_lookup_kdc = false
+          rdns = false
+          # 定义票据缓存位置，防止权限问题
+          default_ccache_name = FILE:/tmp/krb5cc
+      
+      [realms]
+          EXAMPLE.ORG = {
+              kdc = 192.168.22.70
+              admin_server = 192.168.22.70
+          }
+      
+      [domain_realm]
+          .example.org = EXAMPLE.ORG
+          example.org = EXAMPLE.ORG
+    mode: '0644'
+  become: true # 必须使用 become 才能写入容器的 /etc 目录
+
+- name: "Optional: Verify Kerberos configuration"
+  ansible.builtin.command: klist -V
+  register: krb5_version
+  changed_when: false
+
+- name: "Debug: Show Kerberos Readiness"
+  ansible.builtin.debug:
+    msg: "Kerberos environment is initialized in the EE container."
