@@ -1,0 +1,26 @@
+---
+# --- Play 1: 环境准备 (EE 容器层) ---
+- name: "Initialize Execution Environment"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: "Run Common Kerberos Setup"
+      ansible.builtin.include_tasks: common_kerberos_setup.yml
+
+# --- Play 2: 业务逻辑 (Windows 主机层) ---
+- name: "Manage Windows Servers via Kerberos"
+  hosts: all
+  gather_facts: false
+  vars:
+    # 这里的变量可以放在 Inventory 中，也可以写在这里
+    ansible_connection: winrm
+    ansible_port: 5985
+    ansible_winrm_transport: kerberos
+    ansible_winrm_server_cert_validation: ignore
+      #ansible_user: "administrator@EXAMPLE.ORG"
+      #ansible_password: "Redhat!234"
+
+  tasks:
+    - name: "Perform Actual Task"
+      ansible.windows.win_ping:
+      become: false
