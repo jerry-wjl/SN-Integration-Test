@@ -1,0 +1,40 @@
+---
+- name: "Phase 1: Prepare Environment"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: "Inject krb5.conf"
+      # 在 AAP 里，尝试写回 /etc，因为镜像里已经装了所有依赖
+      ansible.builtin.copy:
+        dest: /etc/krb5.conf
+        content: |
+          [libdefaults]
+              default_realm = EXAMPLE.ORG
+              dns_lookup_realm = false
+              dns_lookup_kdc = false
+              rdns = false
+          [realms]
+              EXAMPLE.ORG = {
+                  kdc = 192.168.22.70
+                  admin_server = 192.168.22.70
+              }
+          [domain_realm]
+              .example.org = EXAMPLE.ORG
+              example.org = EXAMPLE.ORG
+      become: true  # AAP 允许在容器内通过 become 写 /etc
+
+- name: "Phase 2: Windows Ping"
+  hosts: all
+  gather_facts: false
+  vars:
+    ansible_connection: winrm
+    ansible_port: 5985
+    ansible_winrm_transport: kerberos
+    ansible_winrm_server_cert_validation: ignore
+    ansible_user: "administrator@EXAMPLE.ORG"
+    ansible_password: "Redhat!234"
+
+  tasks:
+    - name: "WinRM Ping"
+      ansible.windows.win_ping:
+      become: false
