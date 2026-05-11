@@ -1,4 +1,5 @@
 ---
+# run "# sed -i '3,$s/^/  /' csr-temp-store.yml" after paste the csr and make it to key:value format#
 user_csr_content: |
   -----BEGIN NEW CERTIFICATE REQUEST-----
   MIIEbDCCA1QCAQAwbDELMAkGA1UEBhMCQ04xCzAJBgNVBAgMAkdEMQswCQYDVQQH
