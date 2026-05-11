@@ -1,0 +1,98 @@
+---
+# 此版本已经可以实现通过证书申请下载证书，但如果删除之前的无用证书时运行过程中会报错，但playbook仍能执行完成
+# --- Phase 1: Initialize Kerberos for EE container ---
+- name: "Initialization: Setup EE Kerberos"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: "Load Kerberos Configuration"
+      ansible.builtin.include_tasks: common_kerberos_setup.yml
+
+# --- Phase 2: Certificate Fulfillment ---
+- name: "POC: IIS Certificate Automated Fulfillment"
+  hosts: win-prov-01.example.org
+  gather_facts: yes
+  become: no
+  vars_files:
+    - csr-temp-store.yml
+  vars:
+    ansible_connection: winrm
+    ansible_port: 5985
+    ansible_winrm_transport: kerberos
+    ansible_winrm_server_cert_validation: ignore
+    ansible_winrm_kerberos_delegation: true
+
+    ca_server_fqdn: "win-dc.example.org"
+    ca_name: "example-WIN-DC-CA"
+    cert_common_name: "win-prov-01.example.org"
+    cert_template: "webserver"
+    iis_site_name: "Default Web Site"
+    temp_dir: "C:/certs"
+
+  tasks:
+    - name: "Task 1: Ensure working directory exists"
+      ansible.windows.win_file:
+        path: "{{ temp_dir }}"
+        state: directory
+
+    - name: "Task 2: Place CSR content"
+      ansible.windows.win_copy:
+        content: "{{ user_csr_content }}"
+        dest: "{{ temp_dir }}/request.csr"
+
+    - name: "Task 3: Submit CSR and Download Certificate"
+      ansible.windows.win_shell: |
+        certreq -f -submit -config "{{ ca_server_fqdn }}\{{ ca_name }}" -attrib "CertificateTemplate:{{ cert_template }}" "{{ temp_dir }}/request.csr" "{{ temp_dir }}/new_cert.cer"
+      register: cert_log
+      failed_when: cert_log.rc != 0
+
+    - name: "Task 4: Import Certificate via PowerShell (Dual-Store Support)"
+      ansible.windows.win_shell: |
+        $certPath = "{{ temp_dir }}/new_cert.cer"
+        $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
+        $cert.Import($certPath)
+        
+        # 尝试同时存入 WebHosting 和 My，确保万无一失
+        $stores = @("WebHosting", "My")
+        foreach ($storeName in $stores) {
+            $store = New-Object System.Security.Cryptography.X509Certificates.X509Store($storeName, "LocalMachine")
+            $store.Open("ReadWrite")
+            $store.Add($cert)
+            $store.Close()
+            # 修复私钥关联
+            certutil -f -repairstore $storeName $cert.Thumbprint
+        }
+      register: import_result
+
+    - name: "Task 5: Search Thumbprint in Machine Store"
+      ansible.windows.win_shell: |
+        # 别搜全称了，搜前缀 win-prov-01 或者直接按时间排
+        $cert = Get-ChildItem Cert:\LocalMachine\My |
+                Where-Object { $_.Subject -like "*win-prov-01*" } |
+                Sort-Object NotBefore -Descending |
+                Select-Object -First 1
+        if ($cert) {
+            Write-Output $cert.Thumbprint
+        } else {
+            exit 1
+        }
+      register: new_thumbprint
+
+    - name: "Task 6: Update IIS Binding"
+      community.windows.win_iis_webbinding:
+        name: "{{ iis_site_name }}"
+        protocol: https
+        port: 443
+        certificate_hash: "{{ new_thumbprint.stdout | trim }}"
+        # 尝试自动检测存储区，如果不写这个参数，模块通常会默认去 My 找
+        state: present
+
+    - name: "Task 7: Restart IIS"
+      ansible.windows.win_service:
+        name: W3SVC
+        state: restarted
+
+    - name: "Task 8: Result"
+      ansible.builtin.debug:
+        msg: "Successfully processed {{ cert_common_name }} (Thumbprint: {{ new_thumbprint.stdout }})"
