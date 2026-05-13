@@ -1,0 +1,54 @@
+---
+# --- Phase 1: 初始化 EE 环境 ---
+- name: "Initialization: Setup EE Kerberos"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: "Load Kerberos Configuration"
+      ansible.builtin.include_tasks: common_kerberos_setup.yml
+
+# --- Phase 2: 实际管理任务 ---
+- name: "Final Validation: Windows Management via Kerberos"
+  hosts: all
+  gather_facts: false
+  become: no
+  vars:
+    # 基础连接变量（建议后续放入 Inventory 以保持 Playbook 干净）
+    ansible_connection: winrm
+    ansible_port: 5985
+    ansible_winrm_transport: kerberos
+    ansible_winrm_server_cert_validation: ignore
+
+  tasks:
+    # 1. 获取系统运行时间（验证 PowerShell 执行能力）
+    - name: "Get Windows Uptime"
+      ansible.windows.win_shell: |
+        $os = Get-WmiObject Win32_OperatingSystem
+        $uptime = (Get-Date) - $os.ConvertToDateTime($os.LastBootUpTime)
+        Write-Output "Server has been up for $($uptime.Days) days, $($uptime.Hours) hours."
+      register: uptime_result
+
+    - name: "Show Uptime"
+      ansible.builtin.debug:
+        msg: "{{ uptime_result.stdout }}"
+
+    # 2. 创建一个测试文件夹（验证文件系统写入能力）
+    - name: "Create a POC directory on C: drive"
+      ansible.windows.win_file:
+        path: C:\Venetian_POC_Final
+        state: directory
+
+    # 3. 收集磁盘空间信息（验证 Fact 收集与权限）
+    - name: "Check C: Drive Free Space"
+      ansible.windows.win_shell: "Get-PSDrive C | Select-Object Free, Used"
+      register: disk_info
+
+    - name: "Display Disk Info"
+      ansible.builtin.debug:
+        var: disk_info.stdout_lines
+
+    # 4. (可选) 清理工作：如果只想测试，可以把刚才的目录删掉
+    # - name: "Cleanup POC directory"
+    #   ansible.windows.win_file:
+    #     path: C:\Venetian_POC_Final
+    #     state: absent
