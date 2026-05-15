@@ -1,0 +1,37 @@
+---
+- name: "Standalone VMware Guest Shell Test"
+  hosts: localhost
+  gather_facts: false
+  collections:
+    - community.vmware
+
+  tasks:
+    # 1. 载入你定义的配置文件
+    - name: "Load POC Config"
+      ansible.builtin.include_vars:
+        file: "./poc_config.yml"
+
+    # 2. 循环对清单里的每台机器执行操作
+    - name: "Execute GuestShell commands"
+      community.vmware.vmware_vm_shell:
+        hostname: "{{ lookup('env', 'VMWARE_HOST') }}"
+        username: "{{ lookup('env', 'VMWARE_USER') }}"
+        password: "{{ lookup('env', 'VMWARE_PASSWORD') }}"
+        validate_certs: false
+        datacenter: "{{ infra_config.vcenter_dc }}"
+        # 引用 vm_item 里的名字
+        vm_id: "{{ item.name }}"
+        # 引用 win_connection_vars 里的凭据
+        vm_username: "{{ win_connection_vars.ansible_user }}"
+        vm_password: "{{ win_connection_vars.ansible_password }}"
+        vm_shell: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+        vm_shell_args: "-Command \"New-Item -Path 'C:\\Sands_POC_Success.txt' -ItemType File -Force; Get-NetIPAddress | Out-File -FilePath 'C:\\IP_Report.txt'\""
+        wait_for_process: true
+      delegate_to: localhost
+      loop: "{{ vm_list }}"  # 直接在这里循环 vm_list
+      register: shell_results
+
+    # 3. 打印结果
+    - name: "Show execution results"
+      ansible.builtin.debug:
+        var: shell_results
