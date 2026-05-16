@@ -1,0 +1,39 @@
+---
+- name: Use ServiceNow OAuth Credential in AAP
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  environment:
+    http_proxy: http://172.17.38.30:443
+    https_proxy: http://172.17.38.30:443
+    REQUESTS_CA_BUNDLE: "{{ playbook_dir }}/Zscaler_Root_CA.crt"
+    SSL_CERT_FILE: "{{ playbook_dir }}/Zscaler_Root_CA.crt"
+
+  tasks:
+    - name: 1. Get OAuth Access Token
+      ansible.builtin.uri:
+        url: "{{ snow_instance_url }}/oauth_token.do"
+        method: POST
+        validate_certs: true
+        body_format: form-urlencoded
+        body:
+          grant_type: client_credentials
+          client_id: "{{ snow_client_id }}"
+          client_secret: "{{ snow_client_secret }}"
+        headers:
+          User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"
+        status_code: 200
+      register: oauth_response
+
+    - name: 2. Set Access Token Fact
+      ansible.builtin.set_fact:
+        snow_access_token: "{{ oauth_response.json.access_token }}"
+
+    - name: 3. Query ServiceNow Incidents
+      ansible.builtin.uri:
+        url: "{{ snow_instance_url }}/api/now/table/incident?sysparm_query=active=true&sysparm_limit=5"
+        method: GET
+        validate_certs: true
+        headers:
+          Authorization: "Bearer {{ snow_access_token }}"
