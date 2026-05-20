@@ -1,0 +1,132 @@
+---
+- name: Install patches from SCCM
+  hosts: windows
+  vars:
+    sccm_management_point: "sccm-server.your-domain.com"  # 改成你的 SCCM 服务器
+    scan_wait_seconds: 60       # 扫描触发后等待时间
+    install_timeout: 3600       # 最长等待安装时间（秒）
+    poll_interval: 60           # 每隔多少秒检查一次安装进度
+
+  tasks:
+
+    - name: 验证 SCCM Client 服务正在运行
+      ansible.windows.win_service:
+        name: CcmExec
+        state: started
+      register: ccm_service
+
+    - name: 将 SCCM 管理点指向指定服务器
+      ansible.windows.win_powershell:
+        script: |
+          $client = New-Object -ComObject 'Microsoft.SMS.Client'
+          $current = $client.GetCurrentManagementPoint()
+          if ($current -ne $args[0]) {
+              $client.SetCurrentManagementPoint($args[0], 1)
+              Write-Output "Management Point updated to: $($args[0])"
+          } else {
+              Write-Output "Management Point already set to: $current"
+          }
+        arguments:
+          - "{{ sccm_management_point }}"
+
+    - name: 触发软件更新扫描周期
+      ansible.windows.win_powershell:
+        script: |
+          Invoke-CimMethod -Namespace root/ccm -ClassName SMS_Client `
+            -MethodName TriggerSchedule `
+            -Arguments @{sScheduleID='{00000000-0000-0000-0000-000000000113}'}
+          Write-Output "Software Updates Scan Cycle triggered"
+
+    - name: 等待扫描完成
+      ansible.builtin.pause:
+        seconds: "{{ scan_wait_seconds }}"
+
+    - name: 触发软件更新部署评估周期
+      ansible.windows.win_powershell:
+        script: |
+          Invoke-CimMethod -Namespace root/ccm -ClassName SMS_Client `
+            -MethodName TriggerSchedule `
+            -Arguments @{sScheduleID='{00000000-0000-0000-0000-000000000108}'}
+          Write-Output "Software Updates Deployment Evaluation triggered"
+
+    - name: 等待所有更新下载并安装完成
+      ansible.windows.win_powershell:
+        script: |
+          $timeout = [int]$args[0]
+          $interval = [int]$args[1]
+          $elapsed = 0
+
+          # EvaluationState 含义：
+          # 1=Available 4=PreDownload 5=Downloading 6=WaitInstall
+          # 7=Installing 8=PendingReboot 11=InstallComplete 12=Error
+
+          while ($elapsed -lt $timeout) {
+              $updates = Get-CimInstance -Namespace root\ccm\clientsdk `
+                -ClassName CCM_SoftwareUpdate -ErrorAction SilentlyContinue
+
+              if ($null -eq $updates -or $updates.Count -eq 0) {
+                  Write-Output "No pending updates found."
+                  exit 0
+              }
+
+              $inProgress = $updates | Where-Object { $_.EvaluationState -in @(1,4,5,6,7) }
+              $failed     = $updates | Where-Object { $_.EvaluationState -eq 12 }
+              $needReboot = $updates | Where-Object { $_.EvaluationState -eq 8 }
+
+              Write-Output "[${elapsed}s] In-progress: $($inProgress.Count) | Pending reboot: $($needReboot.Count) | Failed: $($failed.Count)"
+
+              if ($failed.Count -gt 0) {
+                  $failed | ForEach-Object { Write-Output "FAILED: $($_.Name)" }
+                  exit 1
+              }
+
+              if ($inProgress.Count -eq 0) {
+                  Write-Output "All updates installed. Pending reboot: $($needReboot.Count)"
+                  exit 0
+              }
+
+              Start-Sleep -Seconds $interval
+              $elapsed += $interval
+          }
+
+          Write-Output "Timeout reached after ${timeout}s"
+          exit 1
+        arguments:
+          - "{{ install_timeout }}"
+          - "{{ poll_interval }}"
+      register: install_result
+      failed_when: install_result.exit_code != 0
+
+    - name: 输出安装日志
+      ansible.builtin.debug:
+        msg: "{{ install_result.output }}"
+
+    - name: 检查是否需要重启
+      ansible.windows.win_powershell:
+        script: |
+          $updates = Get-CimInstance -Namespace root\ccm\clientsdk `
+            -ClassName CCM_SoftwareUpdate -ErrorAction SilentlyContinue
+          $needReboot = $updates | Where-Object { $_.EvaluationState -eq 8 }
+          if ($needReboot) { "true" } else { "false" }
+      register: reboot_needed
+
+    - name: 重启系统（如有需要）
+      ansible.windows.win_reboot:
+        reboot_timeout: 600
+        post_reboot_delay: 30
+        msg: "Rebooting after SCCM patch installation"
+      when: "'true' in reboot_needed.output"
+
+    - name: 重启后验证更新状态
+      ansible.windows.win_powershell:
+        script: |
+          $updates = Get-CimInstance -Namespace root\ccm\clientsdk `
+            -ClassName CCM_SoftwareUpdate -ErrorAction SilentlyContinue
+          $failed = $updates | Where-Object { $_.EvaluationState -eq 12 }
+          if ($failed) {
+              $failed | ForEach-Object { Write-Output "STILL FAILED: $($_.Name)" }
+              exit 1
+          }
+          Write-Output "All patches successfully installed."
+      register: final_check
+      failed_when: final_check.exit_code != 0
