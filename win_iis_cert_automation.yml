@@ -1,0 +1,96 @@
+---
+# --- Phase 1: Initialize Kerberos for EE container ---
+- name: "Initialization: Setup EE Kerberos"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: "Load Kerberos Configuration"
+      ansible.builtin.include_tasks: common_kerberos_setup.yml
+
+# --- Phase 2: Certificate Fulfillment ---
+- name: "POC: IIS Certificate Automated Fulfillment"
+  hosts: win-prov-01.example.org
+  # --- OPTIMIZATION START ---
+  gather_facts: yes
+  gather_subset: ["!all", "min"] # 仅收集基础事实，跳过导致报错的 IIS 证书扫描
+  # --- OPTIMIZATION END ---
+  become: no
+  vars_files:
+    - csr-temp-store.yml
+  vars:
+    ansible_connection: winrm
+    ansible_port: 5985
+    ansible_winrm_transport: kerberos
+    ansible_winrm_server_cert_validation: ignore
+    ansible_winrm_kerberos_delegation: true
+
+    ca_server_fqdn: "win-dc.example.org"
+    ca_name: "example-WIN-DC-CA"
+    cert_common_name: "win-prov-01.example.org"
+    cert_template: "webserver"
+    iis_site_name: "Default Web Site"
+    temp_dir: "C:/certs"
+
+  tasks:
+    - name: "Task 1: Ensure working directory exists"
+      ansible.windows.win_file:
+        path: "{{ temp_dir }}"
+        state: directory
+
+    - name: "Task 2: Place CSR content"
+      ansible.windows.win_copy:
+        content: "{{ user_csr_content }}"
+        dest: "{{ temp_dir }}/request.csr"
+
+    - name: "Task 3: Submit CSR and Download Certificate"
+      ansible.windows.win_shell: |
+        certreq -f -submit -config "{{ ca_server_fqdn }}\{{ ca_name }}" -attrib "CertificateTemplate:{{ cert_template }}" "{{ temp_dir }}/request.csr" "{{ temp_dir }}/new_cert.cer"
+      register: cert_log
+      failed_when: cert_log.rc != 0
+
+    - name: "Task 4: Import Certificate via PowerShell"
+      ansible.windows.win_shell: |
+        $certPath = "{{ temp_dir }}/new_cert.cer"
+        $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
+        $cert.Import($certPath)
+        
+        $stores = @("WebHosting", "My")
+        foreach ($storeName in $stores) {
+            $store = New-Object System.Security.Cryptography.X509Certificates.X509Store($storeName, "LocalMachine")
+            $store.Open("ReadWrite")
+            $store.Add($cert)
+            $store.Close()
+            certutil -f -repairstore $storeName $cert.Thumbprint
+        }
+      register: import_result
+
+    - name: "Task 5: Search Thumbprint in Machine Store"
+      ansible.windows.win_shell: |
+        $cert = Get-ChildItem Cert:\LocalMachine\My |
+                Where-Object { $_.Subject -like "*win-prov-01*" } |
+                Sort-Object NotBefore -Descending |
+                Select-Object -First 1
+        if ($cert) {
+            Write-Output $cert.Thumbprint
+        } else {
+            exit 1
+        }
+      register: new_thumbprint
+
+    - name: "Task 6: Update IIS Binding"
+      community.windows.win_iis_webbinding:
+        name: "{{ iis_site_name }}"
+        protocol: https
+        port: 443
+        certificate_hash: "{{ new_thumbprint.stdout | trim }}"
+        state: present
+
+    - name: "Task 7: Restart IIS"
+      ansible.windows.win_service:
+        name: W3SVC
+        state: restarted
+
+    - name: "Task 8: Result"
+      ansible.builtin.debug:
+        msg: "Successfully processed {{ cert_common_name }} (Thumbprint: {{ new_thumbprint.stdout | trim }})"

@@ -1,0 +1,6 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service]
+"DisableRunAs"=dword:00000001
+"AllowBasic"=dword:00000001
+"AllowUnencryptedTraffic"=dword:00000001

@@ -1,0 +1,221 @@
+---
+# ==============================================================================
+# PLAY 1: 虚拟机克隆、网络强制连接与 WinRM 激活 (运行于 localhost)
+# ==============================================================================
+- name: "Standalone VMware Guest Provision and WinRM Setup"
+  hosts: localhost
+  gather_facts: false
+  collections:
+    - community.vmware
+  vars_files:
+    - poc_config.yml
+
+  tasks:
+    - name: "Step 1: Cloning and Provisioning VMs"
+      community.vmware.vmware_guest:
+        hostname: "{{ lookup('env', 'VMWARE_HOST') }}"
+        username: "{{ lookup('env', 'VMWARE_USER') }}"
+        password: "{{ lookup('env', 'VMWARE_PASSWORD') }}"
+        validate_certs: false
+        datacenter: "{{ infra_config.vcenter_dc }}"
+        #cluster: "{{ infra_config.vcenter_cluster }}"
+        datastore: "{{ infra_config.vcenter_ds }}"
+        folder: "{{ infra_config.vm_folder }}"
+        template: "{{ infra_config.vm_template }}"
+        name: "{{ vm_item.name }}"
+        state: powered-on
+        hardware:
+          memory_mb: "{{ vm_item.ram }}"
+          num_cpus: "{{ vm_item.cpu }}"
+        customization:
+          password: "{{ win_connection_vars.ansible_password }}"
+          autologon: false
+          autologoncount: 0
+        networks:
+          - name: "{{ infra_config.vm_network }}"
+            ip: "{{ vm_item.ip }}"
+            netmask: "{{ vm_item.mask }}"
+            gateway: "{{ vm_item.gw }}"
+            dns_servers: "{{ vm_item.dns }}"
+            type: static
+            start_connected: true
+            connected: true
+            # device_type: vmxnet3
+        wait_for_ip_address: no
+      loop: "{{ vm_list }}"
+      loop_control:
+        loop_var: vm_item
+
+    - name: "Step 1.1: API Settle Pause"
+      ansible.builtin.pause:
+        seconds: 15
+
+    - name: "Step 1.2: PYTHON BYPASS - Force Connect NIC"
+      ansible.builtin.shell: >
+        python3 ./force_nic_connect.py
+        "{{ lookup('env', 'VMWARE_HOST') }}"
+        "{{ lookup('env', 'VMWARE_USER') }}"
+        "{{ lookup('env', 'VMWARE_PASSWORD') }}"
+        "{{ vm_item.name }}"
+      delegate_to: localhost
+      register: py_output
+      loop: "{{ vm_list }}"
+      loop_control:
+        loop_var: vm_item
+
+    - name: "Step 1.3: Show Python Result"
+      ansible.builtin.debug:
+        msg: "{{ py_output.results | map(attribute='stdout_lines') | list }}"
+
+    - name: "Step 2: Final OS Initialization Wait"
+      ansible.builtin.pause:
+        minutes: 3
+        prompt: "NIC should be connected now. Giving Windows 3 minutes to finish Sysprep..."
+        
+    # --- 利用 VMware Tools 穿透将脚本复制进虚机内部 ---
+    - name: "Step 3.1: Copy init script directly into VM via VMware Tools"
+      community.vmware.vmware_guest_file_operation:
+        hostname: "{{ lookup('env', 'VMWARE_HOST') }}"
+        username: "{{ lookup('env', 'VMWARE_USER') }}"
+        password: "{{ lookup('env', 'VMWARE_PASSWORD') }}"
+        validate_certs: false
+        datacenter: "{{ infra_config.vcenter_dc }}"
+        vm_id: "{{ vm_item.name }}"
+        vm_username: "{{ win_connection_vars.ansible_user }}"
+        vm_password: "{{ win_connection_vars.ansible_password }}"
+        copy: 
+          src: "./init_winrm.ps1"
+          dest: "C:\\Windows\\Temp\\init_winrm.ps1"
+          overwrite: true
+      loop: "{{ vm_list }}"
+      loop_control:
+        loop_var: vm_item
+      delegate_to: localhost
+    
+    - name: "Step 3.2: Copy PolicyFileEditor Zip directly into Windows Modules folder"
+      community.vmware.vmware_guest_file_operation:
+        hostname: "{{ lookup('env', 'VMWARE_HOST') }}"
+        username: "{{ lookup('env', 'VMWARE_USER') }}"
+        password: "{{ lookup('env', 'VMWARE_PASSWORD') }}"
+        validate_certs: false
+        datacenter: "{{ infra_config.vcenter_dc }}"
+        vm_id: "{{ vm_item.name }}"
+        vm_username: "{{ win_connection_vars.ansible_user }}"
+        vm_password: "{{ win_connection_vars.ansible_password }}"
+        copy:
+          src: "./PolicyFileEditor.zip"
+          dest: "C:\\Program Files\\WindowsPowerShell\\Modules\\PolicyFileEditor.zip"
+          overwrite: true
+      loop: "{{ vm_list }}"
+      loop_control:
+        loop_var: vm_item
+      delegate_to: localhost
+
+    # --- 【极致精简版 3.2】就地直接解压，不做任何多余的 Shell 命令折腾 ---
+    - name: "Step 3.3: Unzip PolicyFileEditor directly on-site"
+      community.vmware.vmware_vm_shell:
+        hostname: "{{ lookup('env', 'VMWARE_HOST') }}"
+        username: "{{ lookup('env', 'VMWARE_USER') }}"
+        password: "{{ lookup('env', 'VMWARE_PASSWORD') }}"
+        validate_certs: false
+        datacenter: "{{ infra_config.vcenter_dc }}"
+        vm_id: "{{ vm_item.name }}"
+        vm_username: "{{ win_connection_vars.ansible_user }}"
+        vm_password: "{{ win_connection_vars.ansible_password }}"
+        vm_shell: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+        # 直接在就地解压，-Force 确保覆盖已有同名文件
+        vm_shell_args: >-
+          -NoProfile -NonInteractive -Command "
+          Expand-Archive -Path 'C:\Program Files\WindowsPowerShell\Modules\PolicyFileEditor.zip' -DestinationPath 'C:\Program Files\WindowsPowerShell\Modules' -Force
+          "
+        wait_for_process: true
+      loop: "{{ vm_list }}"
+      loop_control:
+        loop_var: vm_item
+      delegate_to: localhost
+
+    # --- 本地直接拉起执行 ---
+    - name: "Step 3.4: Execute the local PowerShell script inside Guest OS"
+      community.vmware.vmware_vm_shell:
+        hostname: "{{ lookup('env', 'VMWARE_HOST') }}"
+        username: "{{ lookup('env', 'VMWARE_USER') }}"
+        password: "{{ lookup('env', 'VMWARE_PASSWORD') }}"
+        validate_certs: false
+        datacenter: "{{ infra_config.vcenter_dc }}"
+        vm_id: "{{ vm_item.name }}"
+        vm_username: "{{ win_connection_vars.ansible_user }}"
+        vm_password: "{{ win_connection_vars.ansible_password }}"
+        # 一行调起，彻底拜拜转义地狱
+        vm_shell: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+        vm_shell_args: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\\Windows\\Temp\\init_winrm.ps1"
+        wait_for_process: true
+      loop: "{{ vm_list }}"
+      loop_control:
+        loop_var: vm_item
+      delegate_to: localhost
+
+    - name: "Step 4: Dynamically build temporary inventory with NLTM parameters"
+      ansible.builtin.add_host:
+        name: "{{ item.ip }}"
+        groups: "new_windows_hosts"
+        ansible_host: "{{ item.ip }}"
+        ansible_connection: "winrm"
+        ansible_port: 5985
+        ansible_winrm_transport: "ntlm"  #"basic"
+        ansible_winrm_server_cert_validation: "ignore"
+        ansible_user: "{{ win_connection_vars.ansible_user }}"
+        ansible_password: "{{ win_connection_vars.ansible_password }}"
+      loop: "{{ vm_list }}"
+
+
+# ==============================================================================
+# PLAY 2: 远程连接 Windows 执行加域与重启 (5985 NTLM)
+# ==============================================================================
+- name: "Windows Active Directory Domain Join Phase"
+  hosts: new_windows_hosts
+  gather_facts: no
+  become: no
+  vars_files:
+    - poc_config.yml
+
+  tasks:
+    - name: "Check WinRM Connectivity via 5985 NTLM"
+      ansible.windows.win_ping:
+
+    - name: "Join Windows Domain"
+      microsoft.ad.membership:
+        dns_domain_name: "{{ ad_domain.name }}"
+        domain_admin_user: "{{ ad_domain.admin_user }}" 
+        domain_admin_password: "{{ ad_domain.admin_password }}"
+        state: domain
+      register: domain_join_results
+
+    - name: "Reboot after Domain Join"
+      ansible.windows.win_reboot:
+        msg: "Rebooting to finalize domain join"
+        pre_reboot_delay: 5
+      when: domain_join_results.reboot_required
+
+
+# ==============================================================================
+# PLAY 3: 【终极验证】直接进系统检查加域状态
+# ==============================================================================
+- name: "Final Domain Verification via Dynamic Connection"
+  hosts: new_windows_hosts
+  gather_facts: no
+  become: no
+  vars_files:
+    - poc_config.yml
+
+  tasks:
+    - name: "Verify Final Connection"
+      ansible.windows.win_ping:
+
+    - name: "Verify Domain Membership on Windows"
+      ansible.windows.win_shell: |
+        (Get-WmiObject -Class Win32_ComputerSystem).PartOfDomain
+      register: domain_check
+
+    - name: "Final Dynamic Success Output"
+      ansible.builtin.debug:
+        msg: "Perfect! VM {{ inventory_hostname }} successfully processed. AD domain validation output: {{ domain_check.stdout }}"

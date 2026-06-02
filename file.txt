@@ -1,0 +1,58 @@
+#Requires -RunAsAdministrator
+
+$ErrorActionPreference = "Stop"
+
+# ------------------------------------------------------------
+# Task 1: 删除现有 WinRM HTTP Listener
+# ------------------------------------------------------------
+Write-Host "[1/5] Deleting existing WinRM HTTP listener..."
+cmd /c 'winrm delete winrm/config/listener?Address=*+Transport=HTTPS 2>&1'
+
+# ------------------------------------------------------------
+# Task 2: 设置 Network Profile 为 Private
+# ------------------------------------------------------------
+Write-Host "[2/5] Setting Network Profile to Private..."
+foreach ($p in (Get-NetConnectionProfile)) {
+    Write-Host "     [$($p.InterfaceIndex)] $($p.InterfaceAlias) - $($p.NetworkCategory)"
+    Set-NetConnectionProfile -InterfaceIndex $p.InterfaceIndex -NetworkCategory Private
+}
+
+# ------------------------------------------------------------
+# Task 3: 修改本地组策略（PolicyFileEditor）
+# ------------------------------------------------------------
+Write-Host "[3/5] Updating Local Group Policy for WinRM..."
+
+Import-Module PolicyFileEditor
+
+$polFile = "$env:SystemRoot\System32\GroupPolicy\Machine\Registry.pol"
+$regKey  = "SOFTWARE\Policies\Microsoft\Windows\WinRM\Service"
+
+# "Allow remote server management through WinRM" -> Not Configured
+Remove-PolicyFileEntry -Path $polFile -Key $regKey -ValueName "AllowAutoConfig" -ErrorAction SilentlyContinue
+
+# "Allow basic authentication" -> Enabled
+Set-PolicyFileEntry -Path $polFile -Key $regKey -ValueName "AllowBasic" -Data 1 -Type DWord
+
+# "Allow unencrypted traffic" -> Enabled
+Set-PolicyFileEntry -Path $polFile -Key $regKey -ValueName "AllowUnencryptedTraffic" -Data 1 -Type DWord
+
+# ------------------------------------------------------------
+# Task 4: 应用组策略
+# ------------------------------------------------------------
+Write-Host "[4/5] Applying Group Policy..."
+gpupdate /force
+
+# ------------------------------------------------------------
+# Task 5: 重新配置 WinRM
+# ------------------------------------------------------------
+Write-Host "[5/5] Re-configuring WinRM..."
+
+Set-Service -Name WinRM -StartupType Automatic
+Enable-PSRemoting -Force -SkipNetworkProfileCheck
+
+cmd /c 'winrm set winrm/config/service @{AllowUnencrypted="true"}'
+cmd /c 'winrm set winrm/config/service/auth @{Basic="true"}'
+
+Write-Host ""
+Write-Host "Done. Current listeners:"
+cmd /c 'winrm enumerate winrm/config/listener'

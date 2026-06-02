@@ -1,0 +1,85 @@
+---
+- name: "Step 1: Cloning and Provisioning {{ vm_item.name }} (Power Off)"
+  community.vmware.vmware_guest:
+    hostname: "{{ lookup('env', 'VMWARE_HOST') }}"
+    username: "{{ lookup('env', 'VMWARE_USER') }}"
+    password: "{{ lookup('env', 'VMWARE_PASSWORD') }}"
+    validate_certs: false
+    datacenter: "{{ infra_config.vcenter_dc }}"
+    cluster: "{{ infra_config.vcenter_cluster }}"
+    datastore: "{{ infra_config.vcenter_ds }}"
+    folder: "{{ infra_config.vm_folder }}"
+    template: "{{ infra_config.vm_template }}"
+    name: "{{ vm_item.name }}"
+    state: poweredoff  # 保持关机状态以埋入指令
+    hardware:
+      memory_mb: "{{ vm_item.ram }}"
+      num_cpus: "{{ vm_item.cpu }}"
+    customization:
+      # --- 注入域和本地管理员指令 ---
+      joindomain: "example.org"
+      domainadmin: "administrator"
+      domainadminpassword: "Redhat!234"
+      hostname: "{{ vm_item.name }}"
+      password: "{{ win_connection_vars.ansible_password }}"
+      autologon: true
+      autologoncount: 1
+    networks:
+      - name: "{{ infra_config.vm_network }}"
+        ip: "{{ vm_item.ip }}"
+        netmask: "{{ vm_item.mask }}"
+        gateway: "{{ vm_item.gw }}"
+        dns_servers: 
+          - "192.168.22.70"
+        type: static
+  register: deploy_result
+  delegate_to: localhost
+
+- name: "Step 2: API Settle Pause"
+  ansible.builtin.pause:
+    seconds: 10
+
+- name: "Step 3: PYTHON BYPASS - Connect NIC"
+  ansible.builtin.shell: >
+    python3 ./force_nic_connect.py 
+    "{{ lookup('env', 'VMWARE_HOST') }}" 
+    "{{ lookup('env', 'VMWARE_USER') }}" 
+    "{{ lookup('env', 'VMWARE_PASSWORD') }}" 
+    "{{ vm_item.name }}"
+  delegate_to: localhost
+
+- name: "Step 3.1: POWER ON - Triggering Customization with Network"
+  community.vmware.vmware_guest_powerstate:
+    hostname: "{{ lookup('env', 'VMWARE_HOST') }}"
+    username: "{{ lookup('env', 'VMWARE_USER') }}"
+    password: "{{ lookup('env', 'VMWARE_PASSWORD') }}"
+    validate_certs: false
+    name: "{{ vm_item.name }}"
+    state: powered-on
+  delegate_to: localhost
+
+- name: "Step 5: Final OS Initialization Wait"
+  ansible.builtin.pause:
+    minutes: 3
+    prompt: "VM is booting with NIC connected. Waiting for Domain Join & Reboots..."
+
+- name: "Step 6: Add newly provisioned host to temporary inventory"
+  ansible.builtin.add_host:
+    name: "{{ vm_item.name }}.example.org"
+    groups: "new_windows_hosts"
+    ansible_host: "{{ vm_item.name }}.example.org"
+    ansible_connection: "winrm"
+    ansible_port: 5985
+    ansible_winrm_transport: "kerberos"
+    ansible_winrm_server_cert_validation: "ignore"
+    ansible_user: "administrator@EXAMPLE.ORG"
+    ansible_password: "Redhat!234"
+
+- name: "Step 7: Final Port Check (Kerberos WinRM Ready)"
+  ansible.builtin.wait_for:
+    host: "{{ vm_item.name }}.example.org"
+    port: 5985
+    state: started
+    delay: 30
+    timeout: 600
+  delegate_to: localhost

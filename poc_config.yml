@@ -1,0 +1,74 @@
+---
+# 1. 基础架构连接信息 (用于 Ansible 访问 vCenter)
+
+#infra_config:
+#  vcenter_dc: "SDDC-Datacenter"
+#  vcenter_cluster: "Cluster-1"
+#  vcenter_ds: "workload_share_yBaQN"
+#  vm_folder: "/Workloads/sandbox-n7bs6"
+#  vm_template: "W2K19-VM-Template"
+#  vm_network: "segment-sandbox-n7bs6"
+
+infra_config:
+  vcenter_dc: "dc1"
+    #  vcenter_cluster: "Cluster-1"
+  vcenter_ds: "datastore3"
+  vm_folder: "venetian-poc"
+  vm_template: "W2K19-VM-WINRMHD-Template"
+  vm_network: "VM Network"
+
+# 2. Windows 运维连接参数 (用于 AAP 连接 Windows 虚机)
+# 这些变量名建议严格遵守 Ansible 标准，方便后续在 playbook 中直接引用
+win_connection_vars:
+  ansible_connection: "winrm"
+  ansible_port: 5985
+  ansible_winrm_transport: "ntlm"
+  ansible_winrm_server_cert_validation: "ignore"
+  ansible_user: "administrator"
+  ansible_password: "Redhat!234"
+
+# 3. Active Directory 域信息 (用于 B2 加域任务)
+ad_domain:
+  name: "example.org"
+  dns_server: "192.168.22.70"
+  admin_user: "administrator@example.org"
+  admin_password: "Redhat!234"
+
+# 4. 待部署虚机列表
+vm_list:
+#  - name: "WIN-PROV-01"
+#    ip: "192.168.22.101"
+#    mask: "255.255.255.0"
+#    gw: "192.168.22.1"
+#    dns: ["192.168.22.70", "8.8.8.8"]
+#    cpu: 2
+#    ram: 4096
+#  - name: "WIN-PROV-02"
+#    ip: "192.168.22.102"
+#    mask: "255.255.255.0"
+#    gw: "192.168.22.1"
+#    dns: ["192.168.22.70", "8.8.8.8"]
+#    cpu: 2
+#    ram: 4096
+#  - name: "WIN-PROV-03"
+#    ip: "192.168.22.103"
+#    mask: "255.255.255.0"
+#    gw: "192.168.22.1"
+#    dns: ["192.168.22.70", "8.8.8.8"]
+#    cpu: 2
+#    ram: 4096
+#
+  - name: "WIN-PROV-04"
+    ip: "192.168.22.104"
+    mask: "255.255.255.0"
+    gw: "192.168.22.1"
+    dns: ["192.168.22.70", "8.8.8.8"]
+    cpu: 2
+    ram: 4096
+  - name: "WIN-PROV-05"
+    ip: "192.168.22.105"
+    mask: "255.255.255.0"
+    gw: "192.168.22.1"
+    dns: ["192.168.22.70", "8.8.8.8"]
+    cpu: 2
+    ram: 4096

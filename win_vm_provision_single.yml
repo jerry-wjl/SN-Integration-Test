@@ -1,0 +1,80 @@
+---
+- name: "Step 1: Cloning and Provisioning {{ vm_item.name }}"
+  community.vmware.vmware_guest:
+    hostname: "{{ lookup('env', 'VMWARE_HOST') }}"
+    username: "{{ lookup('env', 'VMWARE_USER') }}"
+    password: "{{ lookup('env', 'VMWARE_PASSWORD') }}"
+    validate_certs: false
+    datacenter: "{{ infra_config.vcenter_dc }}"
+    cluster: "{{ infra_config.vcenter_cluster }}"
+    datastore: "{{ infra_config.vcenter_ds }}"
+    folder: "{{ infra_config.vm_folder }}"
+    template: "{{ infra_config.vm_template }}"
+    name: "{{ vm_item.name }}"
+    state: powered-on
+    hardware:
+      memory_mb: "{{ vm_item.ram }}"
+      num_cpus: "{{ vm_item.cpu }}"
+    customization:
+      password: "{{ win_connection_vars.ansible_password }}"
+      autologon: false
+      autologoncount: 0
+    networks:
+      - name: "{{ infra_config.vm_network }}"
+        ip: "{{ vm_item.ip }}"
+        netmask: "{{ vm_item.mask }}"
+        gateway: "{{ vm_item.gw }}"
+        dns_servers: "{{ vm_item.dns }}"
+        type: static
+        start_connected: true
+        connected: true
+        device_type: e1000e
+    wait_for_ip_address: no
+  register: deploy_result
+
+- name: "Step 2: API Settle Pause"
+  ansible.builtin.pause:
+    seconds: 15
+
+- name: "Step 3: PYTHON BYPASS - Force Connect NIC"
+  ansible.builtin.shell: >
+    python3 ./force_nic_connect.py 
+    "{{ lookup('env', 'VMWARE_HOST') }}" 
+    "{{ lookup('env', 'VMWARE_USER') }}" 
+    "{{ lookup('env', 'VMWARE_PASSWORD') }}" 
+    "{{ vm_item.name }}"
+  delegate_to: localhost
+  register: py_output
+
+- name: "Step 4: Show Python Result"
+  ansible.builtin.debug:
+    msg: "{{ py_output.stdout_lines }}"
+
+- name: "Step 5: Final OS Initialization Wait"
+  ansible.builtin.pause:
+    minutes: 2
+    prompt: "Giving Windows 2 minutes to finish Sysprep..."
+
+# --- 关键新增：将新虚机动态加入内存清单 ---
+- name: "Step 6: Add newly provisioned host to temporary inventory"
+  ansible.builtin.add_host:
+    name: "{{ vm_item.ip }}"
+    groups: "new_windows_hosts"
+    ansible_host: "{{ vm_item.ip }}"
+    ansible_connection: "winrm"
+    ansible_port: "{{ win_connection_vars.ansible_port }}"
+    ansible_winrm_transport: "{{ win_connection_vars.ansible_winrm_transport }}"
+    ansible_winrm_server_cert_validation: "{{ win_connection_vars.ansible_winrm_server_cert_validation }}"
+    ansible_user: "{{ win_connection_vars.ansible_user }}"
+    ansible_password: "{{ win_connection_vars.ansible_password }}"
+
+- name: "Step 7: Final Port Check (5985)"
+  ansible.builtin.wait_for:
+    host: "{{ vm_item.ip }}"
+    port: 5985
+    state: started
+    delay: 5
+    timeout: 300
+  delegate_to: localhost
+
+
