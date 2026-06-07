@@ -1,23 +1,24 @@
 ---
-- name: ServiceNow - IIS Certificate CSR Parser (AAP Console Display Version)
+- name: ServiceNow - IIS Certificate CSR Parser
   hosts: localhost
   gather_facts: false
   collections:
     - servicenow.itsm
 
+  vars:
+    # 既然是要给后续任务读，我们直接输出一个标准的、可以被 Ansible 随时秒级加载的变量定义多行文件
+    local_vars_file: "/tmp/csr_vars.yml"
+
   tasks:
-    # 1. 模糊匹配查询处于 NEW 状态、标题包含关键描述的最早一张工单
     - name: 1. Poll for the OLDEST "New" IIS Cert Request Ticket
       servicenow.itsm.incident_info:
         sysparm_query: "short_descriptionLIKEIIS cert renew request^state=1^ORDERBYsys_created_on"
       register: incident_result
 
-    # 2. 如果没发现任何符合条件的工单，则空跑顺利退出
     - name: End Play Safely if No Active Ticket Found
       ansible.builtin.meta: end_play
       when: incident_result.records | length == 0
 
-    # 3. 锁定工单（状态由 NEW 变更为 Active）
     - name: 2. Lock Ticket (Move Status from NEW to Active)
       servicenow.itsm.incident:
         number: "{{ incident_result.records[0].number }}"
@@ -26,25 +27,42 @@
           assigned_to: "{{ lookup('env', 'SN_USERNAME') | default('AAP_Automation', true) }}"
           work_notes: "AAP Scheduled Run: Locked and processing CSR content via automation pipeline."
 
-    # 4. 【核心清洗逻辑】：使用 regex_replace 强制剔除 Windows 换行符的污染
+    # 【清洗核心】多重清洗：强行把 \r\n 换成 \n，确保在内存中它是多行的
     - name: 3. Extract and Sanitize CSR Content into Target Variable
       ansible.builtin.set_fact:
         user_csr_content: "{{ incident_result.records[0].description | regex_replace('\\r\\n', '\n') | trim }}"
         ticket_number: "{{ incident_result.records[0].number }}"
 
-    # 5. 【终极显示】直接在 AAP 控制台输出规范的“变量名：变量值”矩阵（无视转义，完美呈现）
-    - name: 4. SHOW OUTPUT FOR USER (VARIABLE_NAME: VARIABLE_VALUE)
-      ansible.builtin.debug:
-        msg: |
-          =========================================
-          [VARIABLE_NAME]: user_csr_content
-          [VARIABLE_VALUE]:
-          {{ user_csr_content }}
-          =========================================
+    # 【彻底满足要求：变量名=变量值落盘】
+    # 直接写入一个干净的 yml 文件，格式为 user_csr_content: |
+    # 后面跟着多行证书。后续任何任务只需要一行 include_vars 就能瞬间读取！
+    - name: 4. Write Standard Variable File for Downstream Tasks
+      ansible.builtin.copy:
+        content: |
+          user_csr_content: |
+            {{ user_csr_content | indent(12, first=true) }}
+        dest: "{{ local_vars_file }}"
+        mode: '0644'
 
-    # 6. 打包统计变量，供流水线后续的 Workflow 子模板继承调用
-    - name: 5. Handover Variable to Downstream Workflow Tasks
+    # 【绕过 debug 模块转义】用 shell echo 配合 AAP 的 stdout，直接把完美的多行画在网页上，绝不截断
+    - name: 5. FORCE PRINT PERFECT TEXT MATRIX ON AAP CONSOLE
+      ansible.builtin.shell: |
+        echo "======================================================================="
+        echo "VARIABLE_NAME: user_csr_content"
+        echo "VARIABLE_VALUE IS SHOWN BELOW (NO TRUNCATION, NO \r\n):"
+        echo "======================================================================="
+        cat "{{ local_vars_file }}"
+        echo "======================================================================="
+      register: output_screen
+
+    # 打印上面 Shell 的结果
+    - name: 6. Display Screen Output
+      ansible.builtin.debug:
+        var: output_screen.stdout_lines
+
+    - name: 7. Handover Variable to Downstream Workflow Tasks
       ansible.builtin.set_stats:
         data:
           user_csr_content: "{{ user_csr_content }}"
+          local_vars_file: "{{ local_vars_file }}"
           has_work: true
