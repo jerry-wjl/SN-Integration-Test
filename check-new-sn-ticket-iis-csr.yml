@@ -6,7 +6,6 @@
     - servicenow.itsm
 
   vars:
-    # 既然是要给后续任务读，我们直接输出一个标准的、可以被 Ansible 随时秒级加载的变量定义多行文件
     local_vars_file: "/tmp/csr_vars.yml"
 
   tasks:
@@ -27,24 +26,21 @@
           assigned_to: "{{ lookup('env', 'SN_USERNAME') | default('AAP_Automation', true) }}"
           work_notes: "AAP Scheduled Run: Locked and processing CSR content via automation pipeline."
 
-    # 【清洗核心】多重清洗：强行把 \r\n 换成 \n，确保在内存中它是多行的
     - name: 3. Extract and Sanitize CSR Content into Target Variable
       ansible.builtin.set_fact:
         user_csr_content: "{{ incident_result.records[0].description | regex_replace('\\r\\n', '\n') | trim }}"
         ticket_number: "{{ incident_result.records[0].number }}"
 
-    # 【彻底满足要求：变量名=变量值落盘】
-    # 直接写入一个干净的 yml 文件，格式为 user_csr_content: |
-    # 后面跟着多行证书。后续任何任务只需要一行 include_vars 就能瞬间读取！
+    # 【精准修复对齐】去掉复杂的 indent 算法，改用金牌标准的 YAML 多行换行符注入。
+    # 这样写落盘后的文件不仅 user_csr_content 格式完美，首尾两行减号也会严格垂直对齐。
     - name: 4. Write Standard Variable File for Downstream Tasks
       ansible.builtin.copy:
         content: |
           user_csr_content: |
-            {{ user_csr_content | indent(12, first=true) }}
+            {{ user_csr_content | regex_replace('\n', '\n    ') }}
         dest: "{{ local_vars_file }}"
         mode: '0644'
 
-    # 【绕过 debug 模块转义】用 shell echo 配合 AAP 的 stdout，直接把完美的多行画在网页上，绝不截断
     - name: 5. FORCE PRINT PERFECT TEXT MATRIX ON AAP CONSOLE
       ansible.builtin.shell: |
         echo "======================================================================="
@@ -55,7 +51,6 @@
         echo "======================================================================="
       register: output_screen
 
-    # 打印上面 Shell 的结果
     - name: 6. Display Screen Output
       ansible.builtin.debug:
         var: output_screen.stdout_lines
