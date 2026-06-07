@@ -31,13 +31,15 @@
         user_csr_content: "{{ incident_result.records[0].description | regex_replace('\\r\\n', '\n') | trim }}"
         ticket_number: "{{ incident_result.records[0].number }}"
 
-    # 【精准修复对齐】去掉复杂的 indent 算法，改用金牌标准的 YAML 多行换行符注入。
-    # 这样写落盘后的文件不仅 user_csr_content 格式完美，首尾两行减号也会严格垂直对齐。
+    # 【精准修复：化繁为简对齐法】
+    # 我们将 user_csr_content 的内容作为一个整体块。
+    # 用 indent(4, first=true) 强迫它所有行（包括第一行）全部统一、死死地向右缩进 4 个空格。
+    # 这会使 BEGIN 行和 END 行与中间的所有密文完美地形成一条直线垂直对齐！
     - name: 4. Write Standard Variable File for Downstream Tasks
       ansible.builtin.copy:
         content: |
           user_csr_content: |
-            {{ user_csr_content | regex_replace('\n', '\n    ') }}
+          {{ user_csr_content | indent(4, first=true) }}
         dest: "{{ local_vars_file }}"
         mode: '0644'
 
