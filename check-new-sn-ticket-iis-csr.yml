@@ -1,5 +1,5 @@
 ---
-- name: ServiceNow - IIS Certificate CSR Parser
+- name: ServiceNow - IIS Certificate CSR Parser (AAP Console Display Version)
   hosts: localhost
   gather_facts: false
   collections:
@@ -12,12 +12,12 @@
         sysparm_query: "short_descriptionLIKEIIS cert renew request^state=1^ORDERBYsys_created_on"
       register: incident_result
 
-    # 6. 如果没发现任何符合条件的工单，则空跑顺利退出（AAP 会显示为 SUCCESS，但中止后续动作）
+    # 2. 如果没发现任何符合条件的工单，则空跑顺利退出
     - name: End Play Safely if No Active Ticket Found
       ansible.builtin.meta: end_play
       when: incident_result.records | length == 0
 
-    # 4 & 5. 发现工单后，在提取前先将工单状态由 NEW (1) 变更为 Active (2) 进行锁定，且一次只处理一条记录 [0]
+    # 3. 锁定工单（状态由 NEW 变更为 Active）
     - name: 2. Lock Ticket (Move Status from NEW to Active)
       servicenow.itsm.incident:
         number: "{{ incident_result.records[0].number }}"
@@ -26,28 +26,25 @@
           assigned_to: "{{ lookup('env', 'SN_USERNAME') | default('AAP_Automation', true) }}"
           work_notes: "AAP Scheduled Run: Locked and processing CSR content via automation pipeline."
 
-    # 2 & 3. 读取工单 description 内容并剥离前后可能存在的空白字符，注入指定名称的变量
+    # 4. 【核心清洗逻辑】：使用 regex_replace 强制剔除 Windows 换行符的污染
     - name: 3. Extract and Sanitize CSR Content into Target Variable
       ansible.builtin.set_fact:
-        user_csr_content: "{{ incident_result.records[0].description | trim }}"
+        user_csr_content: "{{ incident_result.records[0].description | regex_replace('\\r\\n', '\n') | trim }}"
         ticket_number: "{{ incident_result.records[0].number }}"
-        ticket_sys_id: "{{ incident_result.records[0].sys_id }}"
 
-    # Debug 调试阶段在控制台打印，确保在 AAP 执行时能够肉眼可见
-    - name: 4. Debug Output extracted CSR Context
+    # 5. 【终极显示】直接在 AAP 控制台输出规范的“变量名：变量值”矩阵（无视转义，完美呈现）
+    - name: 4. SHOW OUTPUT FOR USER (VARIABLE_NAME: VARIABLE_VALUE)
       ansible.builtin.debug:
-        msg: 
-          - "Processing Ticket: {{ ticket_number }}"
-          - "Extracted CSR content length: {{ user_csr_content | length }} characters"
-          - "======================================================================="
-          - "{{ user_csr_content }}"
+        msg: |
+          =========================================
+          [VARIABLE_NAME]: user_csr_content
+          [VARIABLE_VALUE]:
+          {{ user_csr_content }}
+          =========================================
 
-    # 将数据打包交接，使整个 Workflow 工作流中的后续子模版都能直接用 {{ user_csr_content }}
+    # 6. 打包统计变量，供流水线后续的 Workflow 子模板继承调用
     - name: 5. Handover Variable to Downstream Workflow Tasks
       ansible.builtin.set_stats:
         data:
           user_csr_content: "{{ user_csr_content }}"
-          ticket_context:
-            number: "{{ ticket_number }}"
-            sys_id: "{{ ticket_sys_id }}"
           has_work: true
