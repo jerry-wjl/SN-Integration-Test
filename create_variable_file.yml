@@ -5,7 +5,7 @@
 
   vars:
     # 1. GitHub 认证与仓库配置区
-    github_token: "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"
+    github_token: "{{ lookup('env', 'MY_GITHUB_TOKEN') }}"
     github_user: "jerry-wjl"
     github_repo: "SN-Integration-Test"
     github_file_path: "group_vars/all/runtime_poc_config.yml"
