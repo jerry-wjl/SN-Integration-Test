@@ -73,23 +73,23 @@
     # =========================================================================
     # 核心考虑 3：数据推成功后，立刻通过官方模块命令 AAP 自身发起 Project 强制重新同步
     # =========================================================================
-    - name: 6. Trigger AAP Project Re-sync immediately via Native REST API
-      ansible.builtin.uri:
+    #- name: 6. Trigger AAP Project Re-sync immediately via Native REST API
+    #  ansible.builtin.uri:
         # AAP 自身的项目更新 API 路径固定为：/api/v2/projects/{id}/update/
         # url: "https://{{ aap_host }}/api/v2/projects/{{ aap_project_id }}/update/"
-        url: "https://{{ aap_host | trim }}/api/v2/projects/{{ aap_project_id }}/update/"
-        method: POST
-        status_code: [201, 202] # AAP 接受同步请求后通常会返回 202 Accepted
-        headers:
+    #    url: "https://{{ aap_host | trim }}/api/v2/projects/{{ aap_project_id }}/update/"
+    #    method: POST
+    #    status_code: [201, 202] # AAP 接受同步请求后通常会返回 202 Accepted
+    #    headers:
           # 使用 AAP 运行时隐式自带的 Token 自动完成内部认证
-          Authorization: "Bearer {{ aap_token }}"
-          Content-Type: "application/json"
-        validate_certs: false
-      register: project_sync_api_out
-      when: github_api_response.status in [200, 201]
+    #      Authorization: "Bearer {{ aap_token }}"
+    #      Content-Type: "application/json"
+    #    validate_certs: false
+    #  register: project_sync_api_out
+    #  when: github_api_response.status in [200, 201]
 
     # 7. 终极可视化控制台大盘
-    - name: 7. Visual Dashboard (Final Status Check)
+    - name: 6. Visual Dashboard (Final Status Check)
       ansible.builtin.debug:
         msg: 
           - "=========================================================="
