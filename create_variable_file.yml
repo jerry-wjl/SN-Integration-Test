@@ -1,0 +1,79 @@
+---
+- name: Executioner B - Full Context Formatter & GitHub GitOps Pusher
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    # 你的硬核私货变量配置区
+    github_token: "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"
+    github_user: "jerry-wjl"
+    github_repo: "SN-Integration-Test"
+    # 我们打算在 GitHub 仓库里生成的变量文件相对路径
+    github_file_path: "group_vars/all/runtime_poc_config.yml"
+    github_branch: "main"
+
+  tasks:
+    - name: 1. Stop if no work
+      ansible.builtin.meta: end_play
+      when: not (has_work | default(false) | bool)
+
+    # 【优化项】：既然无法写在本地项目目录，我们用 template 把 yml 渲染结果直接抓到变量内存里！
+    - name: 2. Render Full Configuration into Memory Variable
+      ansible.builtin.set_fact:
+        rendered_yaml_content: "{{ lookup('ansible.builtin.template', 'poc_config.j2') }}"
+
+    # 【防坑连环计 第一步】：探测该文件在 GitHub 上是否已经存在
+    - name: 3. Check if target file already exists on GitHub
+      ansible.builtin.uri:
+        url: "https://api.github.com/repos/{{ github_user }}/{{ github_repo }}/contents/{{ github_file_path }}?ref={{ github_branch }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ github_token }}"
+          Accept: "application/vnd.github+json"
+        status_code: [200, 404] # 200 代表文件已存在，404 代表这是个新文件
+      register: github_file_check
+
+    # 【防坑连环计 第二步】：如果文件存在（200），把提取出来的 SHA 指针注册下来，用来授权覆盖操作
+    - name: 4. Extract SHA if file exists
+      ansible.builtin.set_fact:
+        existing_file_sha: "{{ github_file_check.json.sha }}"
+      when: github_file_check.status == 200
+
+    # 【高阶核心突破】：直接调用 GitHub API 盲操写入/覆盖远端文件
+    - name: 5. Push Variable File directly to GitHub Repository via REST API
+      ansible.builtin.uri:
+        url: "https://api.github.com/repos/{{ github_user }}/{{ github_repo }}/contents/{{ github_file_path }}"
+        method: PUT
+        status_code: [200, 201]
+        headers:
+          Authorization: "Bearer {{ github_token }}"
+          Accept: "application/vnd.github+json"
+          X-GitHub-Api-Version: "2022-11-28"
+        body_format: json
+        body:
+          message: "Automated GitOps Commit: Updated VM variables from ServiceNow Ticket {{ provision_data.ticket_context.number }}"
+          branch: "{{ github_branch }}"
+          # 核心黑魔法：利用 b64encode 将多行 YAML 编码为合法单行字符串透传 GitHub
+          content: "{{ rendered_yaml_content | b64encode }}"
+          # 如果文件存在，带上 sha 告诉 GitHub 验证通过允许覆盖；不存在则为 omit 忽略
+          sha: "{{ existing_file_sha | default(omit) }}"
+      register: github_api_response
+
+    # 6. 用于展示的控制台 Dashboard，确保你在 AAP 网页上能看到清爽的反馈
+    - name: 6. Visual Dashboard (Console Output)
+      ansible.builtin.debug:
+        msg: 
+          - "=========================================================="
+          - "   PROVISIONING & GITOPS DASHBOARD"
+          - "=========================================================="
+          - "  TICKET NUMBER : {{ provision_data.ticket_context.number }}"
+          - "  VMS TO CREATE : {{ provision_data.vm_list | length }}"
+          - "  GITHUB TARGET : {{ github_file_path }}"
+          - "  API STATUS    : {{ github_api_response.status }} (Success)"
+          - "  COMMIT URL    : {{ github_api_response.json.commit.html_url | default('N/A') }}"
+          - "=========================================================="
+
+    # 7. 同样打印出刚刚生成的纯净多行内容，供在 AAP 上做人工肉眼校验
+    - name: 7. Display Rendered YAML Content (Final Verification)
+      ansible.builtin.debug:
+        var: rendered_yaml_content.splitlines()
