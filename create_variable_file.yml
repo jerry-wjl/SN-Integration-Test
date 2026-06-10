@@ -98,5 +98,5 @@
           - "  PROCESSED TICKET   : {{ provision_data.ticket_context.number }}"
           - "  VMS IN CONFIG      : {{ provision_data.vm_list | length }}"
           - "  GITHUB OVERWRITE   : SUCCESS"
-          - "  AAP PROJECT SYNC   : {{ 'SUCCESS (Cache Refreshed)' if project_sync_out.changed else 'NO CHANGE' }}"
+     #     - "  AAP PROJECT SYNC   : {{ 'SUCCESS (Cache Refreshed)' if project_sync_out.changed else 'NO CHANGE' }}"
           - "=========================================================="
