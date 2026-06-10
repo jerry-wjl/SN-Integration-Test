@@ -1,10 +1,10 @@
 ---
 # 0. 工单上下文信息 (用于后续任务回贴工单状态)
 ticket_info:
-  number: "INC0017836"
-  sys_id: "daff860b4791c750c747b2fc416d437f"
+  number: "INC0017837"
+  sys_id: "ae57568b47d14350c9b7d731516d4355"
   vm_count: 4
-  processed_at: "2026-06-10 10:43:06"
+  processed_at: "2026-06-10 11:15:07"
 
 # 1. 基础架构连接信息
 infra_config:
