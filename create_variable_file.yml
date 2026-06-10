@@ -10,6 +10,9 @@
     github_repo: "SN-Integration-Test"
     github_file_path: "group_vars/all/runtime_poc_config.yml"
     github_branch: "main"
+    aap_host: "{{ MY_AAP_HOST }}"
+    aap_token: "{{ MY_AAP_TOKEN }}"
+    aap_project_id: 14
 
     # 2. AAP 自身联动配置区 (用于触发最后一小节的 Project Re-sync)
     # 在 AAP 的 Job Template 运行时，系统会自动隐式提供这两个环境变量，直接 lookup 即可
@@ -73,7 +76,8 @@
     - name: 6. Trigger AAP Project Re-sync immediately via Native REST API
       ansible.builtin.uri:
         # AAP 自身的项目更新 API 路径固定为：/api/v2/projects/{id}/update/
-        url: "https://{{ aap_host }}/api/v2/projects/{{ aap_project_id }}/update/"
+        # url: "https://{{ aap_host }}/api/v2/projects/{{ aap_project_id }}/update/"
+        url: "https://{{ aap_host | trim }}/api/v2/projects/{{ aap_project_id }}/update/"
         method: POST
         status_code: [201, 202] # AAP 接受同步请求后通常会返回 202 Accepted
         headers:
