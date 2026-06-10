@@ -70,17 +70,18 @@
     # =========================================================================
     # 核心考虑 3：数据推成功后，立刻通过官方模块命令 AAP 自身发起 Project 强制重新同步
     # =========================================================================
-    - name: 6. Trigger AAP Project Re-sync immediately to pull fresh variables
-      awx.awx.project_update:
-        # 联动你当前的 AAP 环境凭据
-        project: "{{ aap_project_id }}"
-        controller_host: "{{ aap_host }}"
-        controller_oath_token: "{{ aap_token }}"
+    - name: 6. Trigger AAP Project Re-sync immediately via Native REST API
+      ansible.builtin.uri:
+        # AAP 自身的项目更新 API 路径固定为：/api/v2/projects/{id}/update/
+        url: "https://{{ aap_host }}/api/v2/projects/{{ aap_project_id }}/update/"
+        method: POST
+        status_code: [201, 202] # AAP 接受同步请求后通常会返回 202 Accepted
+        headers:
+          # 使用 AAP 运行时隐式自带的 Token 自动完成内部认证
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
         validate_certs: false
-        # wait=true 代表这个任务会在这里“挂起等待”，直到 AAP 彻底把 Git 代码拉完对齐了才会结束本剧本。
-        # 这样能100%确保 Workflow 里的下一个部署 Job 起来时，本地缓存里已经有这个文件了！
-        wait: true 
-      register: project_sync_out
+      register: project_sync_api_out
       when: github_api_response.status in [200, 201]
 
     # 7. 终极可视化控制台大盘
