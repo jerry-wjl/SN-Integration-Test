@@ -77,7 +77,7 @@
       ansible.builtin.uri:
         # AAP 自身的项目更新 API 路径固定为：/api/v2/projects/{id}/update/
         # url: "https://{{ aap_host }}/api/v2/projects/{{ aap_project_id }}/update/"
-        url: "http://{{ aap_host | trim }}/api/v2/projects/{{ aap_project_id }}/update/"
+        url: "https://{{ aap_host | trim }}/api/v2/projects/{{ aap_project_id }}/update/"
         method: POST
         status_code: [201, 202] # AAP 接受同步请求后通常会返回 202 Accepted
         headers:
