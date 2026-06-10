@@ -1,46 +1,56 @@
 ---
-- name: Executioner B - Full Context Formatter & GitHub GitOps Pusher
+- name: Executioner B - Full Context Formatter & GitHub Pusher & AAP Re-syncer
   hosts: localhost
   gather_facts: false
 
   vars:
-    # 你的硬核私货变量配置区
+    # 1. GitHub 认证与仓库配置区
     github_token: "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"
     github_user: "jerry-wjl"
     github_repo: "SN-Integration-Test"
-    # 我们打算在 GitHub 仓库里生成的变量文件相对路径
     github_file_path: "group_vars/all/runtime_poc_config.yml"
     github_branch: "main"
 
+    # 2. AAP 自身联动配置区 (用于触发最后一小节的 Project Re-sync)
+    # 在 AAP 的 Job Template 运行时，系统会自动隐式提供这两个环境变量，直接 lookup 即可
+    aap_host: "{{ lookup('env', 'TOWER_HOST') }}"
+    aap_token: "{{ lookup('env', 'TOWER_OAUTH_TOKEN') }}"
+    # ★ 核心填写：请去你 AAP 网页端查看你这个 Git 项目（Project）的数字 ID 是多少（比如 10 或 14），填在这里
+    aap_project_id: 14 
+
   tasks:
-    - name: 1. Stop if no work
+    # =========================================================================
+    # 核心考虑 1：双重拦截。若无工单数据，绿灯平稳安全退出，不报错
+    # =========================================================================
+    - name: 1. Safely abort if no work detected from Sentinel A
       ansible.builtin.meta: end_play
       when: not (has_work | default(false) | bool)
 
-    # 【优化项】：既然无法写在本地项目目录，我们用 template 把 yml 渲染结果直接抓到变量内存里！
+    # 2. 只有工单有数据才会走到这里：在内存中利用 template 渲染完整的多行 yml
     - name: 2. Render Full Configuration into Memory Variable
       ansible.builtin.set_fact:
         rendered_yaml_content: "{{ lookup('ansible.builtin.template', 'poc_config.j2') }}"
 
-    # 【防坑连环计 第一步】：探测该文件在 GitHub 上是否已经存在
-    - name: 3. Check if target file already exists on GitHub
+    # =========================================================================
+    # 核心考虑 2：探测 GitHub 远端是否有同名文件，如果有则拿到 SHA 锁以便强制覆盖
+    # =========================================================================
+    - name: 3. Probe GitHub for existing variable file to fetch SHA
       ansible.builtin.uri:
         url: "https://api.github.com/repos/{{ github_user }}/{{ github_repo }}/contents/{{ github_file_path }}?ref={{ github_branch }}"
         method: GET
         headers:
           Authorization: "Bearer {{ github_token }}"
           Accept: "application/vnd.github+json"
-        status_code: [200, 404] # 200 代表文件已存在，404 代表这是个新文件
+        status_code: [200, 404]
       register: github_file_check
 
-    # 【防坑连环计 第二步】：如果文件存在（200），把提取出来的 SHA 指针注册下来，用来授权覆盖操作
-    - name: 4. Extract SHA if file exists
+    - name: 4. Extract SHA lock for forced overwrite override
       ansible.builtin.set_fact:
         existing_file_sha: "{{ github_file_check.json.sha }}"
       when: github_file_check.status == 200
 
-    # 【高阶核心突破】：直接调用 GitHub API 盲操写入/覆盖远端文件
-    - name: 5. Push Variable File directly to GitHub Repository via REST API
+    # 5. 真刀真枪通过 API 发起覆盖操作（抹去旧数据，全量写入新工单的 VM 矩阵）
+    - name: 5. Force Overwrite / Create Variable File on GitHub
       ansible.builtin.uri:
         url: "https://api.github.com/repos/{{ github_user }}/{{ github_repo }}/contents/{{ github_file_path }}"
         method: PUT
@@ -51,29 +61,37 @@
           X-GitHub-Api-Version: "2022-11-28"
         body_format: json
         body:
-          message: "Automated GitOps Commit: Updated VM variables from ServiceNow Ticket {{ provision_data.ticket_context.number }}"
+          message: "GitOps Overwrite: Injected VM specs from SN Ticket {{ provision_data.ticket_context.number }}"
           branch: "{{ github_branch }}"
-          # 核心黑魔法：利用 b64encode 将多行 YAML 编码为合法单行字符串透传 GitHub
           content: "{{ rendered_yaml_content | b64encode }}"
-          # 如果文件存在，带上 sha 告诉 GitHub 验证通过允许覆盖；不存在则为 omit 忽略
           sha: "{{ existing_file_sha | default(omit) }}"
       register: github_api_response
 
-    # 6. 用于展示的控制台 Dashboard，确保你在 AAP 网页上能看到清爽的反馈
-    - name: 6. Visual Dashboard (Console Output)
+    # =========================================================================
+    # 核心考虑 3：数据推成功后，立刻通过官方模块命令 AAP 自身发起 Project 强制重新同步
+    # =========================================================================
+    - name: 6. Trigger AAP Project Re-sync immediately to pull fresh variables
+      awx.awx.project_update:
+        # 联动你当前的 AAP 环境凭据
+        project: "{{ aap_project_id }}"
+        controller_host: "{{ aap_host }}"
+        controller_oath_token: "{{ aap_token }}"
+        validate_certs: false
+        # wait=true 代表这个任务会在这里“挂起等待”，直到 AAP 彻底把 Git 代码拉完对齐了才会结束本剧本。
+        # 这样能100%确保 Workflow 里的下一个部署 Job 起来时，本地缓存里已经有这个文件了！
+        wait: true 
+      register: project_sync_out
+      when: github_api_response.status in [200, 201]
+
+    # 7. 终极可视化控制台大盘
+    - name: 7. Visual Dashboard (Final Status Check)
       ansible.builtin.debug:
         msg: 
           - "=========================================================="
-          - "   PROVISIONING & GITOPS DASHBOARD"
+          - "   ENTERPRISE GITOPS WORKFLOW DASHBOARD"
           - "=========================================================="
-          - "  TICKET NUMBER : {{ provision_data.ticket_context.number }}"
-          - "  VMS TO CREATE : {{ provision_data.vm_list | length }}"
-          - "  GITHUB TARGET : {{ github_file_path }}"
-          - "  API STATUS    : {{ github_api_response.status }} (Success)"
-          - "  COMMIT URL    : {{ github_api_response.json.commit.html_url | default('N/A') }}"
+          - "  PROCESSED TICKET   : {{ provision_data.ticket_context.number }}"
+          - "  VMS IN CONFIG      : {{ provision_data.vm_list | length }}"
+          - "  GITHUB OVERWRITE   : SUCCESS"
+          - "  AAP PROJECT SYNC   : {{ 'SUCCESS (Cache Refreshed)' if project_sync_out.changed else 'NO CHANGE' }}"
           - "=========================================================="
-
-    # 7. 同样打印出刚刚生成的纯净多行内容，供在 AAP 上做人工肉眼校验
-    - name: 7. Display Rendered YAML Content (Final Verification)
-      ansible.builtin.debug:
-        var: rendered_yaml_content.splitlines()
