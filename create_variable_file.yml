@@ -16,8 +16,8 @@
 
     # 2. AAP 自身联动配置区 (用于触发最后一小节的 Project Re-sync)
     # 在 AAP 的 Job Template 运行时，系统会自动隐式提供这两个环境变量，直接 lookup 即可
-    aap_host: "{{ lookup('env', 'TOWER_HOST') }}"
-    aap_token: "{{ lookup('env', 'TOWER_OAUTH_TOKEN') }}"
+    # aap_host: "{{ lookup('env', 'TOWER_HOST') }}"
+    # aap_token: "{{ lookup('env', 'TOWER_OAUTH_TOKEN') }}"
     # ★ 核心填写：请去你 AAP 网页端查看你这个 Git 项目（Project）的数字 ID 是多少（比如 10 或 14），填在这里
     aap_project_id: 14 
 
