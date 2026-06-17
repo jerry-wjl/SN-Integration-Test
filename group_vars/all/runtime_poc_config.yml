@@ -1,10 +1,10 @@
 ---
 # 0. 工单上下文信息 (用于后续任务回贴工单状态)
 ticket_info:
-  number: "INC0017859"
-  sys_id: "af4a521f471d8350c9b7d731516d4358"
+  number: "INC0019350"
+  sys_id: "dd42c75d47214b90c747b2fc416d43ce"
   vm_count: 4
-  processed_at: "2026-06-11 15:56:03"
+  processed_at: "2026-06-17 14:11:47"
 
 # 1. 基础架构连接信息
 infra_config:
@@ -62,7 +62,7 @@ vm_list:
     ram: 8
     portgroup: "QA02_572"
     os_disk: 80
-    app_disk: "60"
+    app_disk: "90"
   - name: "VDQVVMSPDBSS01"
     ip: "192.168.22.104"
     mask: "255.255.255.0"
@@ -72,4 +72,4 @@ vm_list:
     ram: 8
     portgroup: "QA02_572"
     os_disk: 80
-    app_disk: "60"
+    app_disk: "90"
